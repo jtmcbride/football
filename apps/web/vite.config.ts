@@ -3,4 +3,11 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    proxy: {
+      "/health": "http://127.0.0.1:8000",
+      "/data-health": "http://127.0.0.1:8000",
+      "/plays": "http://127.0.0.1:8000",
+    },
+  },
 });

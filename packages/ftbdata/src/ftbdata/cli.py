@@ -53,12 +53,24 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--game-id", required=True)
     export.add_argument("--play-id", required=True)
     export.add_argument("--output", type=Path, required=True)
+
+    serve = commands.add_parser("serve", help="Serve the local read-only tracking API")
+    serve.add_argument("--database", type=Path, default=Path("data/db/football.duckdb"))
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
     return root
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "serve":
+            import uvicorn
+
+            from .api import create_app
+
+            uvicorn.run(create_app(args.database), host=args.host, port=args.port)
+            return 0
         if args.command == "ingest":
             report = TrackingCatalog(args.database).ingest_release(args.input)
             print(json.dumps(asdict(report), indent=2))

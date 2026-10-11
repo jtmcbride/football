@@ -1,4 +1,4 @@
-.PHONY: setup demo sample test web-build dev
+.PHONY: setup demo sample test web-build api dev
 
 setup:
 	uv sync
@@ -18,6 +18,9 @@ test:
 
 web-build:
 	cd apps/web && npm run build
+
+api:
+	uv run football serve --database data/db/football.duckdb
 
 dev:
 	cd apps/web && npm run dev

@@ -77,6 +77,20 @@ catalog maps its legacy `frame.id`, `team`, player-name, and position fields,
 infers play direction from the line of scrimmage when possible, and reports
 acceleration and body orientation as unavailable rather than fabricating zeros.
 
+## Local API
+
+Start the read-only catalog API and web app in separate terminals:
+
+```bash
+make api
+make dev
+```
+
+The API exposes `GET /health`, `GET /data-health`, filtered and paginated
+`GET /plays`, and `GET /plays/{game_id}/{play_id}`. The Vite development server
+proxies those routes to `127.0.0.1:8000`. Responses include source provenance
+without exposing absolute raw-data paths or serving source CSV files.
+
 The 2025 Big Data Bowl field contract is documented on the
 [official Kaggle data page](https://www.kaggle.com/competitions/nfl-big-data-bowl-2025/data).
 It provides game, play, player, player-play, and weekly tracking CSVs. Tracking

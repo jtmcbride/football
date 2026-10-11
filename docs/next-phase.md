@@ -8,9 +8,11 @@ health, normalized play loading, CLI commands, and controlled-fixture tests.
 The catalog has also been validated end to end against the NFL's official 2017
 sample: 177 plays were indexed and a 74-frame, 23-entity play was rendered in
 the web viewer. A legacy adapter maps game-level tracking files and reports
-fields absent from that release. Remaining Milestone 1 work is full-release
-performance profiling, resumable fingerprint checkpoints, and validation
-against a larger accepted Big Data Bowl download.
+fields absent from that release. The local API foundation is now implemented
+with health, sanitized data-health, filtered play search, and normalized play
+endpoints plus contract tests. Remaining work is full-release performance
+profiling, resumable fingerprint checkpoints, the searchable play browser, and
+validation against a larger accepted Big Data Bowl download.
 
 ## Objective
 

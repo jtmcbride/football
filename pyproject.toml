@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "duckdb>=1.4,<2",
+    "fastapi>=0.143.0",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
@@ -26,3 +28,8 @@ packages = ["packages/ftbdata/src/ftbdata"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+]
