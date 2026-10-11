@@ -22,6 +22,42 @@ export interface TrackingFrame {
   entities: TrackedEntity[];
 }
 
+export type JoinStatus = "matched" | "conflicting" | "unmatched" | "unavailable";
+
+/** nflverse play-by-play context joined to a tracking play. Numeric fields are null when nflverse has no value. */
+export interface NflverseFields {
+  playType: string | null;
+  quarter: number | null;
+  clock: string | null;
+  down: number | null;
+  yardsToGo: number | null;
+  offense: string | null;
+  defense: string | null;
+  offenseScore: number | null;
+  defenseScore: number | null;
+  epa: number | null;
+  wpa: number | null;
+  winProbability: number | null;
+  yardsGained: number | null;
+  airYards: number | null;
+  yardsAfterCatch: number | null;
+  isPenalty: boolean | null;
+  penaltyType: string | null;
+  penaltyYards: number | null;
+  offenseFormation: string | null;
+  offensePersonnel: string | null;
+  defensePersonnel: string | null;
+}
+
+export interface NflverseEnrichment {
+  status: JoinStatus;
+  fingerprint: string | null;
+  sourceFile: string | null;
+  /** Fields the season's nflverse file does not contain at all (distinct from a null value). */
+  unavailableFields: string[];
+  fields: NflverseFields | null;
+}
+
 export interface TrackingPlay {
   schemaVersion: number;
   source: {
@@ -53,4 +89,5 @@ export interface TrackingPlay {
     normalizedDirection: "right" | "unknown";
   };
   frames: TrackingFrame[];
+  enrichment?: { nflverse?: NflverseEnrichment };
 }

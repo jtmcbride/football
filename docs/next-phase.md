@@ -10,9 +10,17 @@ sample: 177 plays were indexed and a 74-frame, 23-entity play was rendered in
 the web viewer. A legacy adapter maps game-level tracking files and reports
 fields absent from that release. The local API foundation is now implemented
 with health, sanitized data-health, filtered play search, and normalized play
-endpoints plus contract tests. Remaining work is full-release performance
-profiling, resumable fingerprint checkpoints, the searchable play browser, and
-validation against a larger accepted Big Data Bowl download.
+endpoints plus contract tests. The searchable play browser is implemented, with
+shareable game/play/frame URLs and working browser history. nflverse enrichment
+(Milestone 3) is implemented: season play-by-play Parquet files are ingested into
+separate DuckDB tables, joined to tracking plays by game, play, and season, and
+reported as `matched`, `conflicting`, `unmatched`, or `unavailable` with measured
+coverage by season and week. All 177 plays of the official 2017 sample match the
+2017 nflverse file. Remaining work is full-release performance profiling,
+resumable fingerprint checkpoints, validation against a larger accepted Big Data
+Bowl download, the per-play quality checks and provenance display from Milestone
+2, season/week/situation/EPA filters in the browser, and nflverse participation
+data for formation and personnel in seasons that lack them.
 
 ## Objective
 

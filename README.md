@@ -57,6 +57,28 @@ games, plays, players, and weekly tracking-file locations in DuckDB. It leaves
 the large tracking CSVs in place rather than duplicating them. Re-ingesting an
 unchanged release is idempotent.
 
+### Add nflverse play-by-play context
+
+Download `play_by_play_<season>.parquet` for the seasons in your catalog from the
+[nflverse-data `pbp` release](https://github.com/nflverse/nflverse-data/releases/tag/pbp)
+into their own directory, then join them:
+
+```bash
+uv run football ingest nflverse --input data/raw/nflverse-pbp
+uv run football plays --join-status unmatched
+uv run football plays --epa-min 1.0
+```
+
+Big Data Bowl `gameId`/`playId` are joined to nflverse `old_game_id`/`play_id`
+within the same season. Nothing is dropped when a join fails: each tracking play
+reports `matched`, `conflicting` (joined but quarter or down disagrees),
+`unmatched` (season loaded, no row), or `unavailable` (no file for that season).
+The ingest report and `GET /data-health` give measured coverage by season and
+week, plus fields a season's file does not contain at all (for example formation
+and personnel before 2020). nflverse rows live in separate DuckDB tables, so
+re-ingesting tracking never discards them. EPA and WPA are nflverse model
+outputs, not tracking measurements.
+
 To export a cataloged play for the current file-opening workflow, use:
 
 ```bash
@@ -87,9 +109,10 @@ make dev
 ```
 
 The API exposes `GET /health`, `GET /data-health`, filtered and paginated
-`GET /plays`, and `GET /plays/{game_id}/{play_id}`. The Vite development server
-proxies those routes to `127.0.0.1:8000`. Responses include source provenance
-without exposing absolute raw-data paths or serving source CSV files.
+`GET /plays` (including `epa_min`, `epa_max`, and `join_status` filters), and
+`GET /plays/{game_id}/{play_id}`. The Vite development server proxies them under
+`/api` to `127.0.0.1:8000`. Responses include source provenance and nflverse
+join status without exposing absolute raw-data paths or serving source CSV files.
 
 The 2025 Big Data Bowl field contract is documented on the
 [official Kaggle data page](https://www.kaggle.com/competitions/nfl-big-data-bowl-2025/data).
@@ -144,8 +167,8 @@ integration surface.
 ## Next useful slices
 
 1. Profile cataloging against an accepted full release and add resumable fingerprint checkpoints.
-2. Join nflverse EPA/down-distance context and add filters for team, concept, coverage, and result.
-3. Serve catalog search and play loading through the planned local FastAPI layer.
+2. Add season, week, down-and-distance, and EPA-range filters to the play browser (the API already supports them).
+3. Add per-play provenance and tracking-quality badges (Milestone 2).
 4. Derive route geometry, defender leverage, pocket shape, and separation-over-time curves.
-5. Add reliability/provenance badges so derived metrics always disclose coverage and missing fields.
+5. Ingest nflverse participation data for formation and personnel in seasons that lack them.
 6. Train only after establishing season/game splits that prevent play-family and team leakage.

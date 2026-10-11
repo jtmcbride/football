@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .catalog import CatalogError, CatalogValidationError, PlayFilters, TrackingCatalog
+from .nflverse import JOIN_STATUSES
 from .tracking import extract_play, make_demo_play, write_play
 
 
@@ -32,6 +33,11 @@ def parser() -> argparse.ArgumentParser:
     ingest_bdb = ingest_sources.add_parser("bdb", help="Catalog an NFL Big Data Bowl release")
     ingest_bdb.add_argument("--input", type=Path, required=True, help="Unzipped competition directory")
     ingest_bdb.add_argument("--database", type=Path, default=Path("data/db/football.duckdb"))
+    ingest_nflverse = ingest_sources.add_parser(
+        "nflverse", help="Join nflverse play-by-play (play_by_play_<season>.parquet) to the catalog"
+    )
+    ingest_nflverse.add_argument("--input", type=Path, required=True, help="Directory of play-by-play Parquet files")
+    ingest_nflverse.add_argument("--database", type=Path, default=Path("data/db/football.duckdb"))
 
     plays = commands.add_parser("plays", help="Search plays in a local tracking catalog")
     plays.add_argument("--database", type=Path, default=Path("data/db/football.duckdb"))
@@ -42,6 +48,9 @@ def parser() -> argparse.ArgumentParser:
     plays.add_argument("--down", type=int)
     plays.add_argument("--play-type", choices=("pass", "rush", "other"))
     plays.add_argument("--text")
+    plays.add_argument("--epa-min", type=float)
+    plays.add_argument("--epa-max", type=float)
+    plays.add_argument("--join-status", choices=JOIN_STATUSES)
     plays.add_argument("--page", type=int, default=1)
     plays.add_argument("--page-size", type=int, default=50)
 
@@ -72,7 +81,10 @@ def main(argv: list[str] | None = None) -> int:
             uvicorn.run(create_app(args.database), host=args.host, port=args.port)
             return 0
         if args.command == "ingest":
-            report = TrackingCatalog(args.database).ingest_release(args.input)
+            catalog = TrackingCatalog(args.database)
+            report = (
+                catalog.ingest_nflverse(args.input) if args.source == "nflverse" else catalog.ingest_release(args.input)
+            )
             print(json.dumps(asdict(report), indent=2))
             return 0
         if args.command == "plays":
@@ -85,6 +97,9 @@ def main(argv: list[str] | None = None) -> int:
                     down=args.down,
                     play_type=args.play_type,
                     text=args.text,
+                    epa_min=args.epa_min,
+                    epa_max=args.epa_max,
+                    join_status=args.join_status,
                 ),
                 page=args.page,
                 page_size=args.page_size,

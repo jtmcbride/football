@@ -1,4 +1,5 @@
-import type { TrackingPlay } from "./types";
+import type { DataHealth } from "./enrichment";
+import type { JoinStatus, TrackingPlay } from "./types";
 
 export type PlayType = "pass" | "rush" | "other";
 
@@ -13,17 +14,19 @@ export interface PlaySearchFilters {
 export interface PlaySummary {
   gameId: string;
   playId: string;
-  season: number;
-  week: number;
-  gameDate: string;
-  offense: string;
-  defense: string;
+  season: number | null;
+  week: number | null;
+  gameDate: string | null;
+  offense: string | null;
+  defense: string | null;
   quarter: number | null;
   down: number | null;
   yardsToGo: number | null;
   yardsGained: number | null;
   playType: PlayType;
   description: string;
+  epa: number | null;
+  joinStatus: JoinStatus;
 }
 
 export interface PlayPage {
@@ -50,6 +53,10 @@ export function buildPlaySearchUrl(filters: PlaySearchFilters = {}): string {
 
 export async function fetchPlayPage(filters: PlaySearchFilters = {}, signal?: AbortSignal): Promise<PlayPage> {
   return fetchJson<PlayPage>(buildPlaySearchUrl(filters), signal);
+}
+
+export async function fetchDataHealth(signal?: AbortSignal): Promise<DataHealth> {
+  return fetchJson<DataHealth>("/api/data-health", signal);
 }
 
 export async function fetchTrackingPlay(gameId: string, playId: string, signal?: AbortSignal): Promise<TrackingPlay> {

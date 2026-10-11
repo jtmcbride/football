@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { fetchPlayPage, fetchTrackingPlay } from "../lib/catalog";
+import { fetchDataHealth, fetchPlayPage, fetchTrackingPlay } from "../lib/catalog";
 import type { PlayPage, PlaySummary, PlayType } from "../lib/catalog";
+import { JOIN_STATUS_LABELS, coverageSummary, formatEpa } from "../lib/enrichment";
+import type { NflverseCoverage } from "../lib/enrichment";
 import type { TrackingPlay } from "../lib/types";
 
 const PAGE_SIZE = 8;
@@ -26,6 +28,15 @@ export function PlayBrowser({ currentGameId, currentPlayId, onSelectPlay }: Play
   const [status, setStatus] = useState<"loading" | "ready" | "offline">("loading");
   const [error, setError] = useState<string | null>(null);
   const [loadingPlayKey, setLoadingPlayKey] = useState<string | null>(null);
+  const [coverage, setCoverage] = useState<NflverseCoverage | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchDataHealth(controller.signal)
+      .then((health) => setCoverage(health.nflverse))
+      .catch(() => setCoverage(null));
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -82,6 +93,11 @@ export function PlayBrowser({ currentGameId, currentPlayId, onSelectPlay }: Play
           <i />
           {status === "loading" ? "Scanning catalog" : status === "offline" ? "Catalog offline" : `${result?.total ?? 0} plays indexed`}
         </p>
+        {coverage ? (
+          <p className={`browser-coverage ${coverage.loaded && coverage.overall.matched === coverage.overall.plays ? "complete" : "partial"}`}>
+            {coverageSummary(coverage)}
+          </p>
+        ) : null}
       </div>
 
       <div className="browser-filters">
@@ -152,13 +168,19 @@ export function PlayBrowser({ currentGameId, currentPlayId, onSelectPlay }: Play
                 <span className="cut-number">{String((page - 1) * PAGE_SIZE + index + 1).padStart(2, "0")}</span>
                 <span className="play-situation">
                   <b>{formatDown(summary.down, summary.yardsToGo)}</b>
-                  <small>Q{summary.quarter ?? "—"} · W{summary.week}</small>
+                  <small>Q{summary.quarter ?? "—"} · W{summary.week ?? "—"}</small>
                 </span>
                 <span className="play-matchup">
-                  <b>{summary.offense} <i>v</i> {summary.defense}</b>
+                  <b>{summary.offense ?? "—"} <i>v</i> {summary.defense ?? "—"}</b>
                   <small>{summary.playType} · #{summary.playId}</small>
                 </span>
-                <span className="play-description">{summary.description || "Description unavailable"}</span>
+                <span className="play-description">
+                  {summary.description || "Description unavailable"}
+                  <small className={`join-chip ${summary.joinStatus}`}>
+                    {JOIN_STATUS_LABELS[summary.joinStatus]}
+                    {summary.epa !== null ? ` · EPA ${formatEpa(summary.epa)}` : ""}
+                  </small>
+                </span>
                 <span className={`play-gain ${(summary.yardsGained ?? 0) < 0 ? "loss" : ""}`}>
                   <b>{formatGain(summary.yardsGained)}</b>
                   <small>{loadingPlayKey === key ? "LOADING" : selected ? "ON FIELD" : "YARDS"}</small>

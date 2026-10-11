@@ -8,6 +8,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException, Query
 
 from .catalog import CatalogNotFoundError, PlayFilters, PlaySummary, TrackingCatalog
+from .nflverse import JoinCount, JoinCoverage, camel_case
 
 
 def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> FastAPI:
@@ -39,6 +40,7 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> F
                 "trackingFiles": health.tracking_files,
             },
             "warnings": list(health.warnings),
+            "nflverse": _coverage(health.join_coverage),
         }
 
     @app.get("/plays")
@@ -50,6 +52,9 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> F
         down: int | None = Query(default=None, ge=1, le=4),
         play_type: Literal["pass", "rush", "other"] | None = None,
         text: str | None = Query(default=None, max_length=200),
+        epa_min: float | None = None,
+        epa_max: float | None = None,
+        join_status: Literal["matched", "conflicting", "unmatched", "unavailable"] | None = None,
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
@@ -63,6 +68,9 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> F
                     down=down,
                     play_type=play_type,
                     text=text,
+                    epa_min=epa_min,
+                    epa_max=epa_max,
+                    join_status=join_status,
                 ),
                 page=page,
                 page_size=page_size,
@@ -104,6 +112,37 @@ def _play_summary(summary: PlaySummary) -> dict[str, Any]:
         "yardsGained": values["yards_gained"],
         "playType": values["play_type"],
         "description": values["description"],
+        "epa": values["epa"],
+        "joinStatus": values["join_status"],
+    }
+
+
+def _count(count: JoinCount) -> dict[str, Any]:
+    return {
+        "plays": count.plays,
+        "matched": count.matched,
+        "conflicting": count.conflicting,
+        "unmatched": count.unmatched,
+        "unavailable": count.unavailable,
+        "matchedRate": count.matched_rate,
+    }
+
+
+def _coverage(coverage: JoinCoverage | None) -> dict[str, Any]:
+    if coverage is None:
+        return {"loaded": False, "overall": _count(JoinCount()), "seasons": [], "weeks": []}
+    return {
+        "loaded": coverage.loaded,
+        "overall": _count(coverage.overall),
+        "seasons": [
+            {
+                "season": item.season,
+                **_count(item.counts),
+                "unavailableFields": [camel_case(name) for name in item.unavailable_fields],
+            }
+            for item in coverage.seasons
+        ],
+        "weeks": [{"season": item.season, "week": item.week, **_count(item.counts)} for item in coverage.weeks],
     }
 
 

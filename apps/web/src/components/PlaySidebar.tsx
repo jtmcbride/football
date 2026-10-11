@@ -1,5 +1,6 @@
+import { JOIN_STATUS_LABELS, formatEpa, formatPercent, formatScore, humanizeField } from "../lib/enrichment";
 import { frameMetrics } from "../lib/metrics";
-import type { TrackingPlay } from "../lib/types";
+import type { NflverseEnrichment, TrackingPlay } from "../lib/types";
 
 interface PlaySidebarProps {
   play: TrackingPlay;
@@ -29,6 +30,8 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
           <div><dt>Play ID</dt><dd>{play.play.playId}</dd></div>
         </dl>
       </section>
+
+      <NflverseCard enrichment={play.enrichment?.nflverse ?? null} />
 
       {entity ? (
         <section className="selected-card">
@@ -65,6 +68,47 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
         />
       </section>
     </aside>
+  );
+}
+
+function NflverseCard({ enrichment }: { enrichment: NflverseEnrichment | null }) {
+  const fields = enrichment?.fields ?? null;
+  const unavailable = enrichment?.unavailableFields ?? [];
+  const situation = fields
+    ? [fields.quarter === null ? null : `Q${fields.quarter}`, fields.clock].filter(Boolean).join(" ")
+    : "";
+
+  return (
+    <section className={`nflverse-card ${enrichment?.status ?? "none"}`} aria-label="nflverse context">
+      <p className="eyebrow">NFLVERSE CONTEXT</p>
+      <p className="join-status"><i />{enrichment ? JOIN_STATUS_LABELS[enrichment.status] : "Not part of this source"}</p>
+      {fields ? (
+        <>
+          {enrichment?.status === "conflicting" ? (
+            <p className="nflverse-note">The nflverse row joined on game and play ID but disagrees on quarter or down. Treat these values with caution.</p>
+          ) : null}
+          <dl className="context-grid">
+            <div><dt>EPA</dt><dd>{formatEpa(fields.epa)}</dd></div>
+            <div><dt>WPA</dt><dd>{formatEpa(fields.wpa)}</dd></div>
+            <div><dt>Win prob.</dt><dd>{formatPercent(fields.winProbability)}</dd></div>
+            <div><dt>Clock</dt><dd>{situation || "—"}</dd></div>
+            <div><dt>Score (O–D)</dt><dd>{formatScore(fields.offenseScore, fields.defenseScore)}</dd></div>
+            <div><dt>Air yards</dt><dd>{fields.airYards ?? "—"}</dd></div>
+            <div><dt>YAC</dt><dd>{fields.yardsAfterCatch ?? "—"}</dd></div>
+            <div><dt>Penalty</dt><dd>{fields.isPenalty ? `${fields.penaltyType ?? "yes"}${fields.penaltyYards === null ? "" : ` · ${fields.penaltyYards}`}` : "none"}</dd></div>
+          </dl>
+        </>
+      ) : enrichment ? (
+        <p className="nflverse-note">
+          {enrichment.status === "unmatched"
+            ? "This season's nflverse file has no row for this play. Tracking is shown without play-by-play context."
+            : "No nflverse file is loaded for this play's season. Run `football ingest nflverse` to add context."}
+        </p>
+      ) : null}
+      {unavailable.length > 0 ? (
+        <p className="nflverse-note">Not in this season's nflverse file: {unavailable.map(humanizeField).join(", ")}.</p>
+      ) : null}
+    </section>
   );
 }
 

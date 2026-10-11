@@ -10,13 +10,17 @@ from .catalog import (
     PlaySummary,
     TrackingCatalog,
 )
+from .nflverse import EnrichmentReport, JoinCount, JoinCoverage
 from .tracking import extract_play, make_demo_play
 
 __all__ = [
     "CatalogNotFoundError",
     "CatalogValidationError",
     "DataHealth",
+    "EnrichmentReport",
     "IngestReport",
+    "JoinCount",
+    "JoinCoverage",
     "PlayFilters",
     "PlayPage",
     "PlaySummary",

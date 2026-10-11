@@ -11,6 +11,8 @@ from typing import Any, Iterable
 
 import duckdb
 
+from . import nflverse
+from .nflverse import EnrichmentReport, JoinCount, JoinCoverage, PbpFile, SeasonCoverage, WeekCoverage
 from .tracking import extract_play
 
 CATALOG_SCHEMA_VERSION = 3
@@ -44,6 +46,13 @@ REQUIRED_HEADERS = {
 }
 
 
+# A play is searchable only when a tracking file backs it.
+_TRACKED_SQL = (
+    "EXISTS (SELECT 1 FROM tracking_files tf "
+    "WHERE tf.game_id = p.game_id OR (tf.game_id IS NULL AND tf.week = g.week))"
+)
+
+
 class CatalogError(RuntimeError):
     """Base error raised by the tracking catalog."""
 
@@ -69,6 +78,9 @@ class PlayFilters:
     down: int | None = None
     play_type: str | None = None
     text: str | None = None
+    epa_min: float | None = None
+    epa_max: float | None = None
+    join_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +98,8 @@ class PlaySummary:
     yards_gained: float | None
     play_type: str
     description: str
+    epa: float | None = None
+    join_status: str = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -122,6 +136,7 @@ class DataHealth:
     players: int
     tracking_files: int
     warnings: tuple[str, ...]
+    join_coverage: JoinCoverage | None = None
 
 
 @dataclass(frozen=True)
@@ -319,24 +334,32 @@ class TrackingCatalog:
         if filters.text:
             clauses.append("LOWER(p.description) LIKE ?")
             parameters.append(f"%{filters.text.lower()}%")
-        clauses.append(
-            "EXISTS (SELECT 1 FROM tracking_files tf "
-            "WHERE tf.game_id = p.game_id OR (tf.game_id IS NULL AND tf.week = g.week))"
-        )
+        if filters.epa_min is not None:
+            clauses.append("n.epa >= ?")
+            parameters.append(filters.epa_min)
+        if filters.epa_max is not None:
+            clauses.append("n.epa <= ?")
+            parameters.append(filters.epa_max)
+        if filters.join_status is not None:
+            if filters.join_status not in nflverse.JOIN_STATUSES:
+                raise ValueError(f"join_status must be one of: {', '.join(nflverse.JOIN_STATUSES)}")
+            clauses.append(f"({nflverse.STATUS_SQL}) = ?")
+            parameters.append(filters.join_status)
+        clauses.append(_TRACKED_SQL)
 
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         connection = self._connect_existing()
         try:
             self._require_ready(connection)
             total = connection.execute(
-                f"SELECT COUNT(*) FROM plays p JOIN games g USING (game_id){where}",
+                f"SELECT COUNT(*) FROM plays p JOIN games g USING (game_id) {nflverse.JOIN_SQL}{where}",
                 parameters,
             ).fetchone()[0]
             rows = connection.execute(
                 "SELECT p.game_id, p.play_id, g.season, g.week, g.game_date, "
                 "p.offense, p.defense, p.quarter, p.down, p.yards_to_go, "
-                "p.yards_gained, p.play_type, p.description "
-                f"FROM plays p JOIN games g USING (game_id){where} "
+                f"p.yards_gained, p.play_type, p.description, n.epa, {nflverse.STATUS_SQL} "
+                f"FROM plays p JOIN games g USING (game_id) {nflverse.JOIN_SQL}{where} "
                 "ORDER BY g.season DESC, g.week, p.game_id, TRY_CAST(p.play_id AS BIGINT), p.play_id "
                 "LIMIT ? OFFSET ?",
                 [*parameters, page_size, (page - 1) * page_size],
@@ -374,6 +397,9 @@ class TrackingCatalog:
             if tracking_path is None:
                 raise CatalogNotFoundError(f"No tracking CSV is cataloged for week {week}")
             metadata = self._metadata(connection)
+            enrichment = nflverse.play_enrichment(
+                connection, game_key, play_key, self._nflverse_fingerprint(connection)
+            )
         finally:
             connection.close()
 
@@ -387,7 +413,97 @@ class TrackingCatalog:
         )
         play["source"]["releaseFingerprint"] = metadata["fingerprint"]
         play["source"]["catalogSchemaVersion"] = CATALOG_SCHEMA_VERSION
+        play["enrichment"] = {"nflverse": enrichment}
         return play
+
+    def ingest_nflverse(self, source_directory: str | Path) -> EnrichmentReport:
+        """Load nflverse play-by-play seasons and measure how they join to tracking plays."""
+        source_root = Path(source_directory).expanduser().resolve()
+        try:
+            found = nflverse.discover_pbp_files(source_root)
+        except (FileNotFoundError, ValueError) as error:
+            raise CatalogValidationError([str(error)]) from error
+        if not found:
+            raise CatalogValidationError([
+                f"No play_by_play_<season>.parquet files found in {source_root}. {nflverse.PBP_DOWNLOAD_HINT}"
+            ])
+
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = self._connect()
+        try:
+            self._initialize_schema(connection)
+            inspected: list[tuple[int, Path, int, tuple[str, ...]]] = []
+            errors: list[str] = []
+            for season, path in found:
+                rows, unavailable, file_errors = nflverse.inspect_pbp_file(connection, season, path)
+                errors.extend(file_errors)
+                inspected.append((season, path, rows, unavailable))
+            if errors:
+                raise CatalogValidationError(errors)
+
+            files = [
+                PbpFile(path, season, path.stat().st_size, self._sha256(path), rows, unavailable)
+                for season, path, rows, unavailable in inspected
+            ]
+            fingerprint = nflverse.fingerprint(files)
+            if self._nflverse_fingerprint(connection) == fingerprint:
+                return EnrichmentReport(
+                    source_root=str(source_root),
+                    fingerprint=fingerprint,
+                    ingested_at=connection.execute("SELECT MAX(ingested_at) FROM nflverse_sources").fetchone()[0],
+                    seasons=tuple(item.season for item in files),
+                    plays=sum(item.plays for item in files),
+                    warnings=tuple(self._nflverse_warnings(connection, files, {})),
+                    coverage=self._join_coverage(connection),
+                    reused=True,
+                )
+
+            ingested_at = datetime.now(timezone.utc).isoformat()
+            skipped: dict[int, int] = {}
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                connection.execute("DELETE FROM nflverse_plays")
+                connection.execute("DELETE FROM nflverse_sources")
+                for item in files:
+                    skipped[item.season] = nflverse.insert_pbp_file(connection, item.path, item.unavailable_fields)
+                    connection.execute(
+                        "INSERT INTO nflverse_sources VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        [
+                            item.season,
+                            str(item.path),
+                            item.size_bytes,
+                            item.sha256,
+                            item.plays,
+                            json.dumps(list(item.unavailable_fields)),
+                            ingested_at,
+                        ],
+                    )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+            return EnrichmentReport(
+                source_root=str(source_root),
+                fingerprint=fingerprint,
+                ingested_at=ingested_at,
+                seasons=tuple(item.season for item in files),
+                plays=sum(item.plays - skipped[item.season] for item in files),
+                warnings=tuple(self._nflverse_warnings(connection, files, skipped)),
+                coverage=self._join_coverage(connection),
+            )
+        finally:
+            connection.close()
+
+    def join_coverage(self) -> JoinCoverage:
+        if not self.database_path.exists():
+            return JoinCoverage(loaded=False, overall=JoinCount())
+        connection = self._connect_existing()
+        try:
+            self._initialize_schema(connection)
+            return self._join_coverage(connection)
+        finally:
+            connection.close()
 
     def data_health(self) -> DataHealth:
         if not self.database_path.exists():
@@ -635,6 +751,8 @@ class TrackingCatalog:
             CREATE INDEX IF NOT EXISTS games_season_week_idx ON games(season, week);
             """
         )
+        for statement in nflverse.SCHEMA_SQL:
+            connection.execute(statement)
         source_columns = {
             row[1] for row in connection.execute("PRAGMA table_info('source_files')").fetchall()
         }
@@ -653,6 +771,87 @@ class TrackingCatalog:
                 "SELECT path, week, NULL FROM tracking_files_v1"
             )
             connection.execute("DROP TABLE tracking_files_v1")
+
+    @staticmethod
+    def _nflverse_fingerprint(connection: duckdb.DuckDBPyConnection) -> str | None:
+        rows = connection.execute("SELECT season, size_bytes, sha256 FROM nflverse_sources").fetchall()
+        if not rows:
+            return None
+        return nflverse.fingerprint([PbpFile(Path(), season, size, sha, 0, ()) for season, size, sha in rows])
+
+    @classmethod
+    def _nflverse_warnings(
+        cls, connection: duckdb.DuckDBPyConnection, files: list[PbpFile], skipped: dict[int, int]
+    ) -> list[str]:
+        warnings: list[str] = []
+        for item in files:
+            if item.unavailable_fields:
+                warnings.append(
+                    f"{item.season} play-by-play lacks {len(item.unavailable_fields)} field(s): "
+                    + ", ".join(item.unavailable_fields)
+                )
+            if skipped.get(item.season):
+                warnings.append(
+                    f"{skipped[item.season]} {item.season} rows had no game or play identifier and were skipped"
+                )
+        coverage = cls._join_coverage(connection)
+        for season in coverage.seasons:
+            if season.counts.unavailable:
+                warnings.append(
+                    f"{season.counts.unavailable} cataloged plays in season {season.season} have no nflverse season file"
+                )
+            if season.counts.unmatched:
+                warnings.append(
+                    f"{season.counts.unmatched} cataloged plays in season {season.season} are absent from nflverse"
+                )
+            if season.counts.conflicting:
+                warnings.append(
+                    f"{season.counts.conflicting} cataloged plays in season {season.season} joined to an nflverse "
+                    "row whose quarter or down disagrees"
+                )
+        return warnings
+
+    @staticmethod
+    def _join_coverage(connection: duckdb.DuckDBPyConnection) -> JoinCoverage:
+        rows = connection.execute(
+            f"SELECT g.season, g.week, {nflverse.STATUS_SQL}, COUNT(*) "
+            f"FROM plays p JOIN games g USING (game_id) {nflverse.JOIN_SQL} "
+            f"WHERE {_TRACKED_SQL} GROUP BY ALL"
+        ).fetchall()
+        unavailable_fields = {
+            season: tuple(json.loads(fields))
+            for season, fields in connection.execute(
+                "SELECT season, unavailable_fields FROM nflverse_sources"
+            ).fetchall()
+        }
+
+        def counts(selected: Iterable[tuple[str, int]]) -> JoinCount:
+            totals = {status: 0 for status in nflverse.JOIN_STATUSES}
+            for status, count in selected:
+                totals[status] += count
+            return JoinCount.from_statuses(totals)
+
+        by_week: dict[tuple[int | None, int | None], list[tuple[str, int]]] = {}
+        by_season: dict[int | None, list[tuple[str, int]]] = {}
+        for season, week, status, count in rows:
+            by_week.setdefault((season, week), []).append((status, count))
+            by_season.setdefault(season, []).append((status, count))
+
+        def order(key: Any) -> tuple[bool, Any]:
+            return (key is None, key)
+
+        return JoinCoverage(
+            loaded=bool(unavailable_fields),
+            overall=counts((status, count) for _, _, status, count in rows),
+            seasons=tuple(
+                SeasonCoverage(season, counts(by_season[season]), unavailable_fields.get(season, ()))
+                for season in sorted(by_season, key=order)
+            ),
+            weeks=tuple(
+                WeekCoverage(season, week, counts(by_week[(season, week)]))
+                for season, week in sorted(by_week, key=lambda key: (order(key[0]), order(key[1])))
+            ),
+        )
 
     @staticmethod
     def _metadata(connection: duckdb.DuckDBPyConnection) -> dict[str, str]:
@@ -683,6 +882,7 @@ class TrackingCatalog:
             players=count("players"),
             tracking_files=count("tracking_files"),
             warnings=tuple(json.loads(metadata.get("warnings", "[]"))),
+            join_coverage=cls._join_coverage(connection),
         )
 
 
