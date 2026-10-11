@@ -4,6 +4,22 @@ import { PlaySidebar } from "./components/PlaySidebar";
 import { Timeline } from "./components/Timeline";
 import type { TrackingPlay } from "./lib/types";
 
+const INITIAL_PLAY_URLS = ["/plays/local-sample.json", "/plays/demo.json"] as const;
+
+async function loadInitialPlay(): Promise<TrackingPlay> {
+  let lastError: Error | null = null;
+  for (const url of INITIAL_PLAY_URLS) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
+      return await response.json() as TrackingPlay;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(`Could not load ${url}`);
+    }
+  }
+  throw lastError ?? new Error("No initial play is available.");
+}
+
 export default function App() {
   const [play, setPlay] = useState<TrackingPlay | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -17,13 +33,9 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    fetch("/plays/demo.json")
-      .then((response) => {
-        if (!response.ok) throw new Error(`Demo play returned HTTP ${response.status}`);
-        return response.json() as Promise<TrackingPlay>;
-      })
+    loadInitialPlay()
       .then(setPlay)
-      .catch((error: unknown) => setLoadError(error instanceof Error ? error.message : "Could not load the demo play."));
+      .catch((error: unknown) => setLoadError(error instanceof Error ? error.message : "Could not load an initial play."));
   }, []);
 
   useEffect(() => {
@@ -152,12 +164,16 @@ export default function App() {
         <section className="data-notes" id="data-notes">
           <div>
             <p className="eyebrow">DATA BOUNDARY</p>
-            <h2>The viewer is ready for real tracking. The demo is not real NFL data.</h2>
+            <h2>{play.source.kind === "generated-demo" ? "The viewer is ready for real tracking. The demo is not real NFL data." : "This replay uses real public NFL tracking data."}</h2>
           </div>
-          <p>
-            Big Data Bowl releases require a Kaggle account and acceptance of the competition rules, so raw tracking is not redistributed here. Use the included extractor to convert one downloaded play into this viewer’s compact JSON format.
-          </p>
-          <code>uv run football extract --tracking tracking_week_1.csv --plays plays.csv --players players.csv --game-id … --play-id … --output play.json</code>
+          {play.source.kind === "generated-demo" ? (
+            <p>Run <code>make sample</code> after downloading the official sample to load a real tracked play. Larger Big Data Bowl releases require acceptance of their competition rules.</p>
+          ) : (
+            <p>
+              Source: {play.source.trackingFile}. {play.source.missingFields?.length ? `Unavailable in this release: ${play.source.missingFields.join(", ")}.` : "All core motion fields are available."}
+            </p>
+          )}
+          <code>make sample</code>
         </section>
       </main>
       <footer>

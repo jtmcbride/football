@@ -8,8 +8,10 @@ apps/web/dist/
 apps/web/*.tsbuildinfo
 apps/web/vite.config.js
 apps/web/vite.config.d.ts
+apps/web/public/plays/local-*.json
 data/raw/*
 !data/raw/.gitkeep
+data/*.zip
 data/exports/*
 !data/exports/.gitkeep
 data/db/*

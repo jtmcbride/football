@@ -29,6 +29,7 @@ Requires Python 3.11+ and Node 20.19+.
 ```bash
 make setup
 make demo
+make sample  # optional: ingest the official 2017 sample and open a real play
 make dev
 ```
 
@@ -67,6 +68,12 @@ uv run football export \
 Use **Open play JSON** in the app and select that export. The catalog loader
 streams the week CSV and retains only the selected play, so memory use does not
 scale with the full tracking file.
+
+The official NFL GitHub sample uses an older game-level schema. Place its four
+CSVs in `data/raw/nfl-official-2017-sample/`, then run `make sample`. The
+catalog maps its legacy `frame.id`, `team`, player-name, and position fields,
+infers play direction from the line of scrimmage when possible, and reports
+acceleration and body orientation as unavailable rather than fabricating zeros.
 
 The 2025 Big Data Bowl field contract is documented on the
 [official Kaggle data page](https://www.kaggle.com/competitions/nfl-big-data-bowl-2025/data).

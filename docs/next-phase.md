@@ -2,12 +2,15 @@
 
 ## Implementation status
 
-Milestone 1 is in progress. The first catalog slice now includes release schema
-validation, content fingerprinting, DuckDB metadata indexing, idempotent ingest,
-filtered play search, catalog health, normalized play loading, CLI commands, and
-controlled-fixture tests. Remaining Milestone 1 work is large-release
-performance profiling, resumable fingerprint/ingest checkpoints, and validation
-against an accepted real Big Data Bowl download.
+Milestone 1 now includes release schema validation, content fingerprinting,
+DuckDB metadata indexing, idempotent ingest, filtered play search, catalog
+health, normalized play loading, CLI commands, and controlled-fixture tests.
+The catalog has also been validated end to end against the NFL's official 2017
+sample: 177 plays were indexed and a 74-frame, 23-entity play was rendered in
+the web viewer. A legacy adapter maps game-level tracking files and reports
+fields absent from that release. Remaining Milestone 1 work is full-release
+performance profiling, resumable fingerprint checkpoints, and validation
+against a larger accepted Big Data Bowl download.
 
 ## Objective
 

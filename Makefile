@@ -1,4 +1,4 @@
-.PHONY: setup demo test web-build dev
+.PHONY: setup demo sample test web-build dev
 
 setup:
 	uv sync
@@ -6,6 +6,10 @@ setup:
 
 demo:
 	uv run football demo --output apps/web/public/plays/demo.json
+
+sample:
+	uv run football ingest bdb --input data/raw/nfl-official-2017-sample --database data/db/football.duckdb
+	uv run football export --database data/db/football.duckdb --game-id 2017090700 --play-id 160 --output apps/web/public/plays/local-sample.json
 
 test:
 	uv run python -m unittest discover -s packages/ftbdata/tests -v

@@ -13,8 +13,9 @@ import duckdb
 
 from .tracking import extract_play
 
-CATALOG_SCHEMA_VERSION = 1
+CATALOG_SCHEMA_VERSION = 3
 TRACKING_FILE_PATTERN = re.compile(r"tracking_week_(\d+)\.csv$")
+LEGACY_TRACKING_FILE_PATTERN = re.compile(r"tracking_gameId_(\d+)\.csv$")
 
 REQUIRED_HEADERS = {
     "games": {"gameId", "season", "week", "homeTeamAbbr", "visitorTeamAbbr"},
@@ -22,25 +23,21 @@ REQUIRED_HEADERS = {
         "gameId",
         "playId",
         "possessionTeam",
-        "defensiveTeam",
         "quarter",
         "down",
         "yardsToGo",
         "playDescription",
     },
-    "players": {"nflId", "displayName", "position"},
+    "players": {"nflId"},
     "tracking": {
         "gameId",
         "playId",
         "nflId",
-        "frameId",
-        "club",
-        "playDirection",
+        "displayName",
+        "jerseyNumber",
         "x",
         "y",
         "s",
-        "a",
-        "o",
         "dir",
         "event",
     },
@@ -134,6 +131,7 @@ class _SourceFile:
     week: int | None
     size_bytes: int
     sha256: str
+    game_id: str | None = None
 
 
 class TrackingCatalog:
@@ -176,8 +174,18 @@ class TrackingCatalog:
                 )
 
             try:
-                games = tuple(self._game_rows(discovered["games"]))
-                plays = tuple(self._play_rows(discovered["plays"]))
+                all_games = tuple(self._game_rows(discovered["games"]))
+                tracked_game_ids = {item.game_id for item in source_files if item.game_id is not None}
+                tracked_weeks = {item.week for item in source_files if item.role == "tracking" and item.week is not None}
+                games = tuple(
+                    row
+                    for row in all_games
+                    if row[0] in tracked_game_ids or row[2] in tracked_weeks
+                )
+                teams_by_game = {row[0]: (row[4], row[5]) for row in games}
+                plays = tuple(
+                    row for row in self._play_rows(discovered["plays"], teams_by_game) if row[0] in teams_by_game
+                )
                 players = tuple(self._player_rows(discovered["players"]))
             except (KeyError, TypeError, ValueError) as error:
                 raise CatalogValidationError([f"Could not parse release metadata: {error}"]) from error
@@ -192,6 +200,12 @@ class TrackingCatalog:
                 )
             tracking_files = tuple(item for item in source_files if item.role == "tracking")
 
+            omitted_games = len(all_games) - len(games)
+            if omitted_games:
+                warnings.append(
+                    f"{omitted_games} games without a matching tracking file were omitted from the catalog"
+                )
+
             known_game_ids = {row[0] for row in games}
             unmatched_plays = sum(1 for row in plays if row[0] not in known_game_ids)
             if unmatched_plays:
@@ -199,7 +213,7 @@ class TrackingCatalog:
 
             catalog_weeks = {row[2] for row in games if row[2] is not None}
             tracking_weeks = {item.week for item in tracking_files}
-            missing_weeks = sorted(catalog_weeks - tracking_weeks)
+            missing_weeks = sorted(catalog_weeks - tracking_weeks) if discovered["source_format"] == "weekly" else []
             if missing_weeks:
                 warnings.append(
                     "No tracking CSV was found for catalog weeks: "
@@ -207,6 +221,11 @@ class TrackingCatalog:
                 )
             if discovered.get("player_play") is None:
                 warnings.append("player_play.csv is unavailable; player-play attributes were not cataloged")
+            if discovered["source_format"] == "legacy-game":
+                warnings.append(
+                    "Legacy game-level tracking omits acceleration, body orientation, and source play direction; "
+                    "direction is inferred from the line of scrimmage when possible"
+                )
 
             connection.execute("BEGIN TRANSACTION")
             try:
@@ -226,15 +245,15 @@ class TrackingCatalog:
                     players,
                 )
                 connection.executemany(
-                    "INSERT INTO source_files VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO source_files VALUES (?, ?, ?, ?, ?, ?)",
                     [
-                        (str(item.path), item.role, item.size_bytes, item.sha256, item.week)
+                        (str(item.path), item.role, item.size_bytes, item.sha256, item.week, item.game_id)
                         for item in source_files
                     ],
                 )
                 connection.executemany(
-                    "INSERT INTO tracking_files VALUES (?, ?)",
-                    [(item.week, str(item.path)) for item in tracking_files],
+                    "INSERT INTO tracking_files VALUES (?, ?, ?)",
+                    [(str(item.path), item.week, item.game_id) for item in tracking_files],
                 )
 
                 metadata = {
@@ -245,6 +264,7 @@ class TrackingCatalog:
                     "games_path": str(discovered["games"]),
                     "plays_path": str(discovered["plays"]),
                     "players_path": str(discovered["players"]),
+                    "source_format": discovered["source_format"],
                     "warnings": json.dumps(warnings),
                     "status": "ready",
                 }
@@ -299,6 +319,10 @@ class TrackingCatalog:
         if filters.text:
             clauses.append("LOWER(p.description) LIKE ?")
             parameters.append(f"%{filters.text.lower()}%")
+        clauses.append(
+            "EXISTS (SELECT 1 FROM tracking_files tf "
+            "WHERE tf.game_id = p.game_id OR (tf.game_id IS NULL AND tf.week = g.week))"
+        )
 
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         connection = self._connect_existing()
@@ -333,15 +357,20 @@ class TrackingCatalog:
         try:
             self._require_ready(connection)
             row = connection.execute(
-                "SELECT g.week, tf.path "
-                "FROM plays p JOIN games g USING (game_id) "
-                "LEFT JOIN tracking_files tf ON tf.week = g.week "
+                "SELECT g.week FROM plays p JOIN games g USING (game_id) "
                 "WHERE p.game_id = ? AND p.play_id = ?",
                 [game_key, play_key],
             ).fetchone()
             if row is None:
                 raise CatalogNotFoundError(f"Play gameId={game_key}, playId={play_key} is not cataloged")
-            week, tracking_path = row
+            week = row[0]
+            tracking_row = connection.execute(
+                "SELECT path FROM tracking_files "
+                "WHERE game_id = ? OR (game_id IS NULL AND week = ?) "
+                "ORDER BY CASE WHEN game_id = ? THEN 0 ELSE 1 END LIMIT 1",
+                [game_key, week, game_key],
+            ).fetchone()
+            tracking_path = tracking_row[0] if tracking_row else None
             if tracking_path is None:
                 raise CatalogNotFoundError(f"No tracking CSV is cataloged for week {week}")
             metadata = self._metadata(connection)
@@ -354,6 +383,7 @@ class TrackingCatalog:
             play_key,
             plays_path=metadata["plays_path"],
             players_path=metadata["players_path"],
+            games_path=metadata["games_path"],
         )
         play["source"]["releaseFingerprint"] = metadata["fingerprint"]
         play["source"]["catalogSchemaVersion"] = CATALOG_SCHEMA_VERSION
@@ -391,49 +421,78 @@ class TrackingCatalog:
         if player_play is not None and not player_play.is_file():
             discovered["player_play"] = None
 
-        tracking_paths = sorted(source_root.glob("tracking_week_*.csv"), key=lambda path: path.name)
+        weekly_tracking_paths = sorted(source_root.glob("tracking_week_*.csv"), key=lambda path: path.name)
+        legacy_tracking_paths = sorted(source_root.glob("tracking_gameId_*.csv"), key=lambda path: path.name)
+        tracking_paths = [*weekly_tracking_paths, *legacy_tracking_paths]
         if not tracking_paths:
-            errors.append(f"No tracking_week_*.csv files found in {source_root}")
+            errors.append(
+                f"No tracking_week_*.csv or tracking_gameId_*.csv files found in {source_root}"
+            )
         seen_weeks: set[int] = set()
+        seen_games: set[str] = set()
         for path in tracking_paths:
             week = self._tracking_week(path)
-            if week is None:
-                errors.append(f"Tracking filename does not include a valid week: {path.name}")
-            elif week in seen_weeks:
+            game_id = self._tracking_game(path)
+            if week is not None and week in seen_weeks:
                 errors.append(f"More than one tracking CSV claims week {week}")
-            else:
+            elif week is not None:
                 seen_weeks.add(week)
+            elif game_id is not None and game_id in seen_games:
+                errors.append(f"More than one tracking CSV claims game {game_id}")
+            elif game_id is not None:
+                seen_games.add(game_id)
+            else:
+                errors.append(f"Tracking filename has no valid week or game ID: {path.name}")
             errors.extend(self._header_errors(path, REQUIRED_HEADERS["tracking"]))
+            headers = self._headers(path)
+            if not ({"frameId", "frame.id"} & headers):
+                errors.append(f"{path.name} is missing a frame identifier (frameId or frame.id)")
+            if not ({"club", "team"} & headers):
+                errors.append(f"{path.name} is missing a team identifier (club or team)")
+
+        player_headers = self._headers(discovered["players"]) if discovered["players"].is_file() else set()
+        if player_headers and not ({"displayName", "LastName"} & player_headers):
+            errors.append("players.csv is missing player names (displayName or LastName)")
+        if player_headers and not ({"position", "PositionAbbr"} & player_headers):
+            errors.append("players.csv is missing player position (position or PositionAbbr)")
         if errors:
             raise CatalogValidationError(errors)
 
         discovered["tracking"] = tracking_paths
+        discovered["source_format"] = "legacy-game" if legacy_tracking_paths else "weekly"
         return discovered
 
     @staticmethod
     def _header_errors(path: Path, required: set[str]) -> list[str]:
-        with path.open(newline="", encoding="utf-8-sig") as handle:
-            headers = set(next(csv.reader(handle), []))
+        headers = TrackingCatalog._headers(path)
         missing = sorted(required - headers)
         return [f"{path.name} is missing required columns: {', '.join(missing)}"] if missing else []
 
+    @staticmethod
+    def _headers(path: Path) -> set[str]:
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            return set(next(csv.reader(handle), []))
+
     def _fingerprint(self, discovered: dict[str, Any]) -> tuple[tuple[_SourceFile, ...], str]:
-        paths: list[tuple[Path, str, int | None]] = [
-            (discovered["games"], "games", None),
-            (discovered["plays"], "plays", None),
-            (discovered["players"], "players", None),
+        paths: list[tuple[Path, str, int | None, str | None]] = [
+            (discovered["games"], "games", None, None),
+            (discovered["plays"], "plays", None, None),
+            (discovered["players"], "players", None, None),
         ]
         if discovered.get("player_play"):
-            paths.append((discovered["player_play"], "player_play", None))
-        paths.extend((path, "tracking", self._tracking_week(path)) for path in discovered["tracking"])
+            paths.append((discovered["player_play"], "player_play", None, None))
+        paths.extend(
+            (path, "tracking", self._tracking_week(path), self._tracking_game(path))
+            for path in discovered["tracking"]
+        )
 
         files: list[_SourceFile] = []
         release_hash = hashlib.sha256()
-        for path, role, week in paths:
+        for path, role, week, game_id in paths:
             digest = self._sha256(path)
             size = path.stat().st_size
             release_hash.update(f"{path.name}\0{size}\0{digest}\n".encode())
-            files.append(_SourceFile(path.resolve(), role, week, size, digest))
+            files.append(_SourceFile(path.resolve(), role, week, size, digest, game_id))
         return tuple(files), release_hash.hexdigest()
 
     @staticmethod
@@ -450,6 +509,11 @@ class TrackingCatalog:
         return int(match.group(1)) if match else None
 
     @staticmethod
+    def _tracking_game(path: Path) -> str | None:
+        match = LEGACY_TRACKING_FILE_PATTERN.search(path.name)
+        return match.group(1) if match else None
+
+    @staticmethod
     def _game_rows(path: Path) -> Iterable[tuple[Any, ...]]:
         for row in _csv_rows(path):
             yield (
@@ -462,34 +526,47 @@ class TrackingCatalog:
             )
 
     @staticmethod
-    def _play_rows(path: Path) -> Iterable[tuple[Any, ...]]:
+    def _play_rows(
+        path: Path, teams_by_game: dict[str, tuple[str | None, str | None]]
+    ) -> Iterable[tuple[Any, ...]]:
         for row in _csv_rows(path):
+            game_id = row["gameId"]
+            offense = _text(row.get("possessionTeam"))
+            home, away = teams_by_game.get(game_id, (None, None))
+            defense = _text(row.get("defensiveTeam"))
+            if defense is None and offense is not None:
+                defense = away if offense == home else home if offense == away else None
             yield (
-                row["gameId"],
+                game_id,
                 row["playId"],
-                _text(row.get("possessionTeam")),
-                _text(row.get("defensiveTeam")),
+                offense,
+                defense,
                 _integer(row.get("quarter")),
                 _integer(row.get("down")),
                 _float(row.get("yardsToGo")),
-                _float(row.get("yardsGained")),
+                _float(row.get("yardsGained") or row.get("PlayResult")),
                 _float(row.get("absoluteYardlineNumber")),
                 _play_type(row),
                 _text(row.get("playDescription")) or "Tracking play",
-                _text(row.get("passResult")),
+                _text(row.get("passResult") or row.get("PassResult")),
                 json.dumps(row, separators=(",", ":"), sort_keys=True),
             )
 
     @staticmethod
     def _player_rows(path: Path) -> Iterable[tuple[Any, ...]]:
         for row in _csv_rows(path):
+            display_name = _text(row.get("displayName"))
+            if display_name is None:
+                display_name = " ".join(
+                    part for part in (_text(row.get("FirstName")), _text(row.get("LastName"))) if part
+                ) or None
             yield (
                 row["nflId"],
-                _text(row.get("displayName")),
-                _text(row.get("position")),
-                _text(row.get("height")),
-                _integer(row.get("weight")),
-                _text(row.get("collegeName")),
+                display_name,
+                _text(row.get("position") or row.get("PositionAbbr")),
+                _text(row.get("height") or row.get("Height")),
+                _integer(row.get("weight") or row.get("Weight")),
+                _text(row.get("collegeName") or row.get("College")),
             )
 
     def _connect(self) -> duckdb.DuckDBPyConnection:
@@ -513,11 +590,13 @@ class TrackingCatalog:
                 role VARCHAR NOT NULL,
                 size_bytes BIGINT NOT NULL,
                 sha256 VARCHAR NOT NULL,
-                week INTEGER
+                week INTEGER,
+                game_id VARCHAR
             );
             CREATE TABLE IF NOT EXISTS tracking_files (
-                week INTEGER PRIMARY KEY,
-                path VARCHAR NOT NULL
+                path VARCHAR PRIMARY KEY,
+                week INTEGER,
+                game_id VARCHAR
             );
             CREATE TABLE IF NOT EXISTS games (
                 game_id VARCHAR PRIMARY KEY,
@@ -556,6 +635,24 @@ class TrackingCatalog:
             CREATE INDEX IF NOT EXISTS games_season_week_idx ON games(season, week);
             """
         )
+        source_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info('source_files')").fetchall()
+        }
+        if "game_id" not in source_columns:
+            connection.execute("ALTER TABLE source_files ADD COLUMN game_id VARCHAR")
+        tracking_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info('tracking_files')").fetchall()
+        }
+        if "game_id" not in tracking_columns:
+            connection.execute("ALTER TABLE tracking_files RENAME TO tracking_files_v1")
+            connection.execute(
+                "CREATE TABLE tracking_files (path VARCHAR PRIMARY KEY, week INTEGER, game_id VARCHAR)"
+            )
+            connection.execute(
+                "INSERT INTO tracking_files(path, week, game_id) "
+                "SELECT path, week, NULL FROM tracking_files_v1"
+            )
+            connection.execute("DROP TABLE tracking_files_v1")
 
     @staticmethod
     def _metadata(connection: duckdb.DuckDBPyConnection) -> dict[str, str]:
@@ -598,7 +695,7 @@ def _text(value: str | None) -> str | None:
     if value is None:
         return None
     stripped = value.strip()
-    return stripped or None
+    return stripped if stripped and not _is_missing_number(stripped) else None
 
 
 def _integer(value: str | None) -> int | None:
@@ -616,13 +713,23 @@ def _is_missing_number(value: str) -> bool:
 
 
 def _play_type(row: dict[str, str]) -> str:
-    if _text(row.get("passResult")) or _text(row.get("dropbackType")):
+    if _text(row.get("passResult") or row.get("PassResult")) or _text(row.get("dropbackType")):
         return "pass"
     if _text(row.get("rushLocationType")) or _text(row.get("rushLocation")):
         return "rush"
     description = (row.get("playDescription") or "").lower()
     if " pass" in description or description.startswith("pass"):
         return "pass"
-    if " rush" in description or " left end" in description or " right end" in description:
+    rush_phrases = (
+        " rush",
+        " up the middle",
+        " left end",
+        " right end",
+        " left guard",
+        " right guard",
+        " left tackle",
+        " right tackle",
+    )
+    if any(phrase in description for phrase in rush_phrases):
         return "rush"
     return "other"

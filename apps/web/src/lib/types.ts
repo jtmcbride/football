@@ -10,7 +10,7 @@ export interface TrackedEntity {
   x: number;
   y: number;
   speed: number;
-  acceleration: number;
+  acceleration: number | null;
   orientation: number | null;
   direction: number | null;
 }
@@ -28,6 +28,9 @@ export interface TrackingPlay {
     name: string;
     kind: "generated-demo" | "public-competition-data" | string;
     trackingFile: string | null;
+    trackingFormat?: "weekly" | "legacy-game" | string;
+    directionMethod?: "source" | "inferred-line-of-scrimmage" | "unavailable" | string;
+    missingFields?: string[];
   };
   field: {
     length: number;
@@ -47,7 +50,7 @@ export interface TrackingPlay {
     yardsGained: number | null;
     absoluteYardline: number | null;
     originalDirection: "left" | "right" | string;
-    normalizedDirection: "right";
+    normalizedDirection: "right" | "unknown";
   };
   frames: TrackingFrame[];
 }

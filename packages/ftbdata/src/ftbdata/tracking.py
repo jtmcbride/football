@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import statistics
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ FIELD_WIDTH = 53.3
 
 
 def _number(value: str | None, *, integer: bool = False) -> float | int | None:
-    if value is None or value.strip() == "":
+    if value is None or value.strip() == "" or value.strip().lower() in {"na", "nan", "none", "null"}:
         return None
     return int(float(value)) if integer else round(float(value), 4)
 
@@ -34,7 +35,7 @@ def _read_lookup(path: Path | None, key_fields: tuple[str, ...]) -> dict[tuple[s
 def _first_nonempty(row: dict[str, str], *keys: str) -> str | None:
     for key in keys:
         value = row.get(key)
-        if value not in (None, ""):
+        if value not in (None, "") and value.strip().lower() not in {"na", "nan", "none", "null"}:
             return value
     return None
 
@@ -46,6 +47,7 @@ def extract_play(
     *,
     plays_path: str | Path | None = None,
     players_path: str | Path | None = None,
+    games_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Extract one play from a Big Data Bowl tracking CSV.
 
@@ -56,60 +58,82 @@ def extract_play(
     game_key, play_key = str(game_id), str(play_id)
     play_lookup = _read_lookup(Path(plays_path) if plays_path else None, ("gameId", "playId"))
     player_lookup = _read_lookup(Path(players_path) if players_path else None, ("nflId",))
+    game_lookup = _read_lookup(Path(games_path) if games_path else None, ("gameId",))
     play_row = play_lookup.get((game_key, play_key), {})
+    game_row = game_lookup.get((game_key,), {})
+
+    with Path(tracking_path).open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        tracking_headers = set(reader.fieldnames or ())
+        tracking_rows = [
+            row
+            for row in reader
+            if row.get("gameId") == game_key and row.get("playId") == play_key
+        ]
+
+    if not tracking_rows:
+        raise ValueError(f"No tracking rows found for gameId={game_key}, playId={play_key}")
+
+    source_direction = next(
+        (
+            direction.lower()
+            for row in tracking_rows
+            if (direction := _first_nonempty(row, "playDirection")) is not None
+        ),
+        None,
+    )
+    absolute_yardline = _number(play_row.get("absoluteYardlineNumber"))
+    direction_method = "source"
+    if source_direction is None:
+        source_direction, inferred_yardline = _infer_legacy_direction(play_row, tracking_rows)
+        absolute_yardline = absolute_yardline or inferred_yardline
+        direction_method = "inferred-line-of-scrimmage" if source_direction else "unavailable"
 
     frame_rows: dict[int, list[dict[str, Any]]] = defaultdict(list)
     event_by_frame: dict[int, str] = {}
-    source_direction: str | None = None
     offense = _first_nonempty(play_row, "possessionTeam")
-    defense = _first_nonempty(play_row, "defensiveTeam")
+    defense = _first_nonempty(play_row, "defensiveTeam") or _opponent(game_row, offense)
+    rotate = source_direction == "left"
 
-    with Path(tracking_path).open(newline="", encoding="utf-8-sig") as handle:
-        for row in csv.DictReader(handle):
-            if row.get("gameId") != game_key or row.get("playId") != play_key:
-                continue
+    for row in tracking_rows:
+        frame_value = _first_nonempty(row, "frameId", "frame.id")
+        if frame_value is None:
+            continue
+        frame_id = int(frame_value)
+        nfl_id = _number(row.get("nflId"), integer=True)
+        is_ball = _is_ball_row(row, nfl_id)
+        club = _club(row, game_row, is_ball)
+        player = player_lookup.get((str(nfl_id),), {}) if nfl_id is not None else {}
+        x = float(row["x"])
+        y = float(row["y"])
+        orientation = _number(row.get("o"))
+        direction = _number(row.get("dir"))
+        if rotate:
+            x = FIELD_LENGTH - x
+            y = FIELD_WIDTH - y
+            orientation = _rotate_angle(orientation)
+            direction = _rotate_angle(direction)
 
-            frame_id = int(row["frameId"])
-            source_direction = source_direction or row.get("playDirection", "right").lower()
-            rotate = source_direction == "left"
-            nfl_id = _number(row.get("nflId"), integer=True)
-            is_ball = nfl_id is None
-            club = row.get("club") or ("football" if is_ball else "unknown")
-            player = player_lookup.get((str(nfl_id),), {}) if nfl_id is not None else {}
-            x = float(row["x"])
-            y = float(row["y"])
-            orientation = _number(row.get("o"))
-            direction = _number(row.get("dir"))
-            if rotate:
-                x = FIELD_LENGTH - x
-                y = FIELD_WIDTH - y
-                orientation = _rotate_angle(orientation)
-                direction = _rotate_angle(direction)
-
-            entity = {
-                "id": "ball" if is_ball else str(nfl_id),
-                "kind": "ball" if is_ball else "player",
-                "name": row.get("displayName") or player.get("displayName") or "Football",
-                "club": club,
-                "position": player.get("position") or None,
-                "jersey": _number(row.get("jerseyNumber"), integer=True),
-                "x": round(x, 3),
-                "y": round(y, 3),
-                "speed": _number(row.get("s")) or 0.0,
-                "acceleration": _number(row.get("a")) or 0.0,
-                "orientation": orientation,
-                "direction": direction,
-            }
-            frame_rows[frame_id].append(entity)
-            event = (row.get("event") or "").strip()
-            if event and event != "None":
-                event_by_frame[frame_id] = event
-
-    if not frame_rows:
-        raise ValueError(f"No tracking rows found for gameId={game_key}, playId={play_key}")
+        entity = {
+            "id": "ball" if is_ball else str(nfl_id),
+            "kind": "ball" if is_ball else "player",
+            "name": _first_nonempty(row, "displayName") or _player_name(player) or "Football",
+            "club": club,
+            "position": _first_nonempty(player, "position", "PositionAbbr"),
+            "jersey": _number(row.get("jerseyNumber"), integer=True),
+            "x": round(x, 3),
+            "y": round(y, 3),
+            "speed": _number(row.get("s")) or 0.0,
+            "acceleration": _number(row.get("a")),
+            "orientation": orientation,
+            "direction": direction,
+        }
+        frame_rows[frame_id].append(entity)
+        event = _first_nonempty(row, "event")
+        if event:
+            event_by_frame[frame_id] = event
 
     frame_ids = sorted(frame_rows)
-    absolute_yardline = _number(play_row.get("absoluteYardlineNumber"))
     if source_direction == "left" and absolute_yardline is not None:
         absolute_yardline = round(FIELD_LENGTH - float(absolute_yardline), 3)
     frames = [
@@ -125,33 +149,119 @@ def extract_play(
     return {
         "schemaVersion": 1,
         "source": {
-            "name": "NFL Big Data Bowl",
+            "name": "NFL Big Data Bowl official sample" if "frame.id" in tracking_headers else "NFL Big Data Bowl",
             "kind": "public-competition-data",
             "trackingFile": Path(tracking_path).name,
+            "trackingFormat": "legacy-game" if "frame.id" in tracking_headers else "weekly",
+            "directionMethod": direction_method,
+            "missingFields": [
+                field
+                for field, source_field in (("acceleration", "a"), ("orientation", "o"))
+                if source_field not in tracking_headers
+            ],
         },
         "field": {"length": FIELD_LENGTH, "width": FIELD_WIDTH, "endZoneDepth": 10.0},
         "play": {
             "gameId": game_key,
             "playId": play_key,
-            "title": _play_title(play_row, game_key, play_key),
+            "title": _play_title(play_row, game_key, play_key, offense, defense),
             "description": _first_nonempty(play_row, "playDescription") or "Tracking play",
             "offense": offense,
             "defense": defense,
             "quarter": _number(play_row.get("quarter"), integer=True),
             "down": _number(play_row.get("down"), integer=True),
             "yardsToGo": _number(play_row.get("yardsToGo")),
-            "yardsGained": _number(play_row.get("yardsGained")),
+            "yardsGained": _number(_first_nonempty(play_row, "yardsGained", "PlayResult")),
             "absoluteYardline": absolute_yardline,
-            "originalDirection": source_direction or "right",
-            "normalizedDirection": "right",
+            "originalDirection": source_direction or "unknown",
+            "normalizedDirection": "right" if source_direction in {"left", "right"} else "unknown",
         },
         "frames": frames,
     }
 
 
-def _play_title(row: dict[str, str], game_id: str, play_id: str) -> str:
-    offense = _first_nonempty(row, "possessionTeam")
-    defense = _first_nonempty(row, "defensiveTeam")
+def _player_name(row: dict[str, str]) -> str | None:
+    display_name = _first_nonempty(row, "displayName")
+    if display_name:
+        return display_name
+    parts = [_first_nonempty(row, "FirstName"), _first_nonempty(row, "LastName")]
+    name = " ".join(part for part in parts if part)
+    return name or None
+
+
+def _opponent(game_row: dict[str, str], offense: str | None) -> str | None:
+    home = _first_nonempty(game_row, "homeTeamAbbr")
+    away = _first_nonempty(game_row, "visitorTeamAbbr")
+    if offense == home:
+        return away
+    if offense == away:
+        return home
+    return None
+
+
+def _club(row: dict[str, str], game_row: dict[str, str], is_ball: bool) -> str:
+    if is_ball:
+        return "football"
+    club = _first_nonempty(row, "club", "team")
+    if club == "home":
+        return _first_nonempty(game_row, "homeTeamAbbr") or "home"
+    if club == "away":
+        return _first_nonempty(game_row, "visitorTeamAbbr") or "away"
+    return club or "unknown"
+
+
+def _is_ball_row(row: dict[str, str], nfl_id: float | int | None) -> bool:
+    return nfl_id is None and (
+        (_first_nonempty(row, "displayName") or "").lower() == "football"
+        or (_first_nonempty(row, "club", "team") or "").lower() in {"football", "ball"}
+        or nfl_id is None
+    )
+
+
+def _infer_legacy_direction(
+    play_row: dict[str, str], tracking_rows: list[dict[str, str]]
+) -> tuple[str | None, float | None]:
+    yardline = _number(play_row.get("yardlineNumber"))
+    possession = _first_nonempty(play_row, "possessionTeam")
+    yardline_side = _first_nonempty(play_row, "yardlineSide")
+    if yardline is None or possession is None:
+        return None, None
+
+    ball_positions = sorted(
+        (
+            (int(_first_nonempty(row, "frameId", "frame.id") or 0), float(row["x"]))
+            for row in tracking_rows
+            if _is_ball_row(row, _number(row.get("nflId"), integer=True))
+        ),
+        key=lambda item: item[0],
+    )
+    if not ball_positions:
+        return None, None
+
+    initial_x = statistics.median(x for _, x in ball_positions[:10])
+    if float(yardline) == 50.0:
+        return None, 60.0
+    on_own_side = yardline_side == possession
+    right_los = 10.0 + float(yardline) if on_own_side else 110.0 - float(yardline)
+    left_los = FIELD_LENGTH - right_los
+    right_distance = abs(initial_x - right_los)
+    left_distance = abs(initial_x - left_los)
+    if math.isclose(right_distance, left_distance, abs_tol=0.5):
+        return None, round(initial_x, 3)
+    if right_distance < left_distance:
+        return "right", round(right_los, 3)
+    return "left", round(left_los, 3)
+
+
+def _play_title(
+    row: dict[str, str],
+    game_id: str,
+    play_id: str,
+    offense: str | None = None,
+    defense: str | None = None,
+) -> str:
+    offense = offense or _first_nonempty(row, "possessionTeam")
+    defense = defense or _first_nonempty(row, "defensiveTeam")
     if offense and defense:
         return f"{offense} vs {defense}"
     return f"Game {game_id} / Play {play_id}"

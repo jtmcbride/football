@@ -24,7 +24,7 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
         <p>{play.play.description}</p>
         <dl className="context-grid">
           <div><dt>Quarter</dt><dd>{play.play.quarter ?? "—"}</dd></div>
-          <div><dt>Direction</dt><dd>→ normalized</dd></div>
+          <div><dt>Direction</dt><dd>{play.play.normalizedDirection === "right" ? "→ normalized" : "unavailable"}</dd></div>
           <div><dt>Game ID</dt><dd>{play.play.gameId}</dd></div>
           <div><dt>Play ID</dt><dd>{play.play.playId}</dd></div>
         </dl>
@@ -42,7 +42,7 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
           </div>
           <dl className="selected-stats">
             <div><dt>Speed</dt><dd>{entity.speed.toFixed(1)} <small>yd/s</small></dd></div>
-            <div><dt>Accel.</dt><dd>{entity.acceleration.toFixed(1)} <small>yd/s²</small></dd></div>
+            <div><dt>Accel.</dt><dd>{entity.acceleration === null ? "—" : entity.acceleration.toFixed(1)} {entity.acceleration === null ? null : <small>yd/s²</small>}</dd></div>
             <div><dt>Field x</dt><dd>{entity.x.toFixed(1)} <small>yd</small></dd></div>
             <div><dt>Field y</dt><dd>{entity.y.toFixed(1)} <small>yd</small></dd></div>
           </dl>

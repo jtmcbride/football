@@ -147,7 +147,7 @@ export const FieldReplay = memo(function FieldReplay({
         })}
       </svg>
       <div className="direction-ribbon" aria-hidden="true">
-        <span>OFFENSE</span><i /><b>RIGHT</b>
+        <span>OFFENSE</span><i /><b>{play.play.normalizedDirection === "right" ? "RIGHT" : "UNKNOWN"}</b>
       </div>
     </div>
   );

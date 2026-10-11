@@ -18,6 +18,7 @@ def parser() -> argparse.ArgumentParser:
     extract.add_argument("--tracking", type=Path, required=True)
     extract.add_argument("--plays", type=Path)
     extract.add_argument("--players", type=Path)
+    extract.add_argument("--games", type=Path)
     extract.add_argument("--game-id", required=True)
     extract.add_argument("--play-id", required=True)
     extract.add_argument("--output", type=Path, required=True)
@@ -96,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.play_id,
                 plays_path=args.plays,
                 players_path=args.players,
+                games_path=args.games,
             )
         write_play(play, args.output)
         print(f"Wrote {len(play['frames'])} frames to {args.output}")

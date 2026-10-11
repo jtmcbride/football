@@ -95,7 +95,40 @@ class TrackingCatalogTest(unittest.TestCase):
         self.assertIn("games.csv is missing required columns", message)
         self.assertIn("Missing required plays.csv", message)
         self.assertIn("Missing required players.csv", message)
-        self.assertIn("No tracking_week_*.csv", message)
+        self.assertIn("No tracking_week_*.csv or tracking_gameId_*.csv", message)
+
+    def test_ingests_legacy_game_tracking_and_preserves_missing_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release = root / "legacy"
+            release.mkdir()
+            self._write_legacy_release(release)
+            catalog = TrackingCatalog(root / "legacy.duckdb")
+
+            report = catalog.ingest_release(release)
+
+            self.assertEqual((report.games, report.plays, report.tracking_files), (1, 1, 1))
+            self.assertTrue(any("1 games" in warning for warning in report.warnings))
+            self.assertTrue(any("Legacy game-level tracking" in warning for warning in report.warnings))
+
+            page = catalog.find_plays(PlayFilters(offense="NE", defense="KC"))
+            self.assertEqual(page.total, 1)
+            self.assertEqual(page.items[0].play_type, "pass")
+            self.assertEqual(page.items[0].yards_gained, 0.0)
+
+            play = catalog.load_play("100", "68")
+            self.assertEqual(play["source"]["trackingFormat"], "legacy-game")
+            self.assertEqual(play["source"]["directionMethod"], "inferred-line-of-scrimmage")
+            self.assertEqual(play["source"]["missingFields"], ["acceleration", "orientation"])
+            self.assertEqual(play["play"]["defense"], "KC")
+            self.assertEqual(play["play"]["title"], "NE vs KC")
+            self.assertEqual(play["play"]["originalDirection"], "left")
+            self.assertEqual(play["play"]["absoluteYardline"], 37.0)
+            player = next(entity for entity in play["frames"][0]["entities"] if entity["kind"] == "player")
+            self.assertEqual((player["name"], player["club"], player["position"]), ("Tom Quarterback", "NE", "QB"))
+            self.assertIsNone(player["acceleration"])
+            self.assertIsNone(player["orientation"])
+            self.assertEqual(player["direction"], 90.0)
 
     def test_health_is_not_ready_before_ingestion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -145,6 +178,44 @@ class TrackingCatalogTest(unittest.TestCase):
             ],
         )
 
+    def _write_legacy_release(self, root: Path) -> None:
+        self._write(
+            root / "games.csv",
+            ["season", "week", "gameDate", "gameId", "homeTeamAbbr", "visitorTeamAbbr"],
+            [
+                ["2017", "1", "09/07/2017", "100", "NE", "KC"],
+                ["2017", "1", "09/10/2017", "200", "DET", "ARI"],
+            ],
+        )
+        self._write(
+            root / "plays.csv",
+            [
+                "gameId", "playId", "quarter", "down", "yardsToGo", "possessionTeam",
+                "yardlineSide", "yardlineNumber", "PassResult", "PlayResult", "playDescription",
+            ],
+            [
+                ["100", "68", "1", "1", "10", "NE", "NE", "27", "I", "0", "T.Quarterback pass incomplete deep left"],
+                ["200", "10", "1", "1", "10", "ARI", "ARI", "20", "NA", "3", "Runner up the middle"],
+            ],
+        )
+        self._write(
+            root / "players.csv",
+            ["nflId", "FirstName", "LastName", "PositionAbbr", "Height", "Weight", "College"],
+            [["12", "Tom", "Quarterback", "QB", "6-4", "225", "Example U"]],
+        )
+        self._write(
+            root / "tracking_gameId_100.csv",
+            [
+                "time", "x", "y", "s", "dis", "dir", "event", "nflId", "displayName",
+                "jerseyNumber", "team", "frame.id", "gameId", "playId",
+            ],
+            [
+                ["2017-09-08T00:00:00Z", "84", "30", "1", "0", "270", "ball_snap", "12", "Tom Quarterback", "12", "home", "1", "100", "68"],
+                ["2017-09-08T00:00:00Z", "83", "29", "0", "0", "NA", "NA", "NA", "football", "NA", "ball", "1", "100", "68"],
+                ["2017-09-08T00:00:00Z", "85", "30", "2", "0.1", "270", "NA", "12", "Tom Quarterback", "12", "home", "2", "100", "68"],
+                ["2017-09-08T00:00:00Z", "84", "29", "2", "0.1", "NA", "NA", "NA", "football", "NA", "ball", "2", "100", "68"],
+            ],
+        )
     @staticmethod
     def _write(path: Path, headers: list[str], rows: list[list[str]]) -> None:
         with path.open("w", newline="", encoding="utf-8") as handle:
