@@ -4,6 +4,8 @@ A local-first NFL tracking analysis workbench: animate one play at 10 Hz, inspec
 players frame by frame, and measure spacing without losing sight of where the
 data came from.
 
+![Football Motion Lab replaying the official NFL tracking sample](artifacts/football-motion-lab.png)
+
 The first vertical slice is intentionally narrow. It handles NFL Big Data Bowl
 tracking exports, normalizes every play so the offense moves left-to-right, and
 renders a fast custom-SVG replay with player inspection and spatial summaries.
