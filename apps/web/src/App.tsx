@@ -1,19 +1,44 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FieldReplay } from "./components/FieldReplay";
+import { PlayBrowser } from "./components/PlayBrowser";
 import { PlaySidebar } from "./components/PlaySidebar";
 import { Timeline } from "./components/Timeline";
+import { fetchTrackingPlay } from "./lib/catalog";
+import { clampFrame, isLinkedTo, parsePlayLink, withPlayLink, withoutPlayLink } from "./lib/playLink";
 import type { TrackingPlay } from "./lib/types";
 
 const INITIAL_PLAY_URLS = ["/plays/local-sample.json", "/plays/demo.json"] as const;
 
-async function loadInitialPlay(): Promise<TrackingPlay> {
+interface LocationPlay {
+  play: TrackingPlay;
+  frameIndex: number;
+  linkError: string | null;
+}
+
+/** Resolves the play named by the current URL, falling back to the bundled sample. */
+async function loadPlayForLocation(signal: AbortSignal): Promise<LocationPlay> {
   let lastError: Error | null = null;
+  let linkError: string | null = null;
+  const link = parsePlayLink(window.location.search);
+
+  if (link) {
+    try {
+      const play = await fetchTrackingPlay(link.gameId, link.playId, signal);
+      return { play, frameIndex: clampFrame(link.frameIndex, play.frames.length), linkError: null };
+    } catch (error) {
+      if (signal.aborted) throw error;
+      const detail = error instanceof Error ? error.message : "unknown error";
+      linkError = `Linked play ${link.gameId}/${link.playId} could not be loaded (${detail}). Showing the default play instead.`;
+    }
+  }
+
   for (const url of INITIAL_PLAY_URLS) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal });
       if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
-      return await response.json() as TrackingPlay;
+      return { play: await response.json() as TrackingPlay, frameIndex: 0, linkError };
     } catch (error) {
+      if (signal.aborted) throw error;
       lastError = error instanceof Error ? error : new Error(`Could not load ${url}`);
     }
   }
@@ -32,10 +57,34 @@ export default function App() {
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  // Restore the play named by the URL on first load and on browser back/forward.
   useEffect(() => {
-    loadInitialPlay()
-      .then(setPlay)
-      .catch((error: unknown) => setLoadError(error instanceof Error ? error.message : "Could not load an initial play."));
+    let controller = new AbortController();
+    const restore = () => {
+      controller.abort();
+      controller = new AbortController();
+      const { signal } = controller;
+      loadPlayForLocation(signal)
+        .then((next) => {
+          if (signal.aborted) return;
+          setPlay(next.play);
+          setFrameIndex(next.frameIndex);
+          setIsPlaying(false);
+          setSelectedEntityId(null);
+          setLoadError(next.linkError);
+          if (next.linkError) replaceSearch(withoutPlayLink(window.location.search));
+        })
+        .catch((error: unknown) => {
+          if (signal.aborted) return;
+          setLoadError(error instanceof Error ? error.message : "Could not load an initial play.");
+        });
+    };
+    restore();
+    window.addEventListener("popstate", restore);
+    return () => {
+      controller.abort();
+      window.removeEventListener("popstate", restore);
+    };
   }, []);
 
   useEffect(() => {
@@ -56,6 +105,29 @@ export default function App() {
     setFrameIndex(nextIndex);
   }, []);
 
+  const selectCatalogPlay = useCallback((nextPlay: TrackingPlay) => {
+    setPlay(nextPlay);
+    setFrameIndex(0);
+    setIsPlaying(false);
+    setSelectedEntityId(null);
+    setLoadError(null);
+    // A new play is a history entry so Back returns to the previous one; re-selecting the same play is not.
+    const { gameId, playId } = nextPlay.play;
+    const search = withPlayLink(window.location.search, { gameId, playId, frameIndex: 0 });
+    if (isLinkedTo(window.location.search, gameId, playId)) replaceSearch(search);
+    else pushSearch(search);
+  }, []);
+
+  // Scrubbing rewrites the current entry only, and only while the URL still names the displayed play.
+  useEffect(() => {
+    if (!play || !isLinkedTo(window.location.search, play.play.gameId, play.play.playId)) return;
+    replaceSearch(withPlayLink(window.location.search, {
+      gameId: play.play.gameId,
+      playId: play.play.playId,
+      frameIndex,
+    }));
+  }, [frameIndex, play]);
+
   const loadFile = useCallback(async (file: File | undefined) => {
     if (!file) return;
     try {
@@ -68,6 +140,7 @@ export default function App() {
       setIsPlaying(false);
       setSelectedEntityId(null);
       setLoadError(null);
+      replaceSearch(withoutPlayLink(window.location.search));
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Could not read that play export.");
     }
@@ -90,6 +163,7 @@ export default function App() {
           {play.source.name}
         </div>
         <nav aria-label="Primary">
+          <a href="#play-browser">Plays</a>
           <a className="active" href="#replay">Replay</a>
           <a href="#data-notes">Data notes</a>
         </nav>
@@ -122,6 +196,12 @@ export default function App() {
         </section>
 
         {loadError ? <div className="error-banner" role="alert">{loadError}</div> : null}
+
+        <PlayBrowser
+          currentGameId={play.play.gameId}
+          currentPlayId={play.play.playId}
+          onSelectPlay={selectCatalogPlay}
+        />
 
         <section className="replay-layout" id="replay">
           <div className="replay-main">
@@ -192,4 +272,12 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
       <span>{label}</span>
     </label>
   );
+}
+
+function replaceSearch(search: string): void {
+  window.history.replaceState(null, "", `${window.location.pathname}${search}${window.location.hash}`);
+}
+
+function pushSearch(search: string): void {
+  window.history.pushState(null, "", `${window.location.pathname}${search}${window.location.hash}`);
 }
