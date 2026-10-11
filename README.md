@@ -167,8 +167,7 @@ integration surface.
 ## Next useful slices
 
 1. Profile cataloging against an accepted full release and add resumable fingerprint checkpoints.
-2. Add season, week, down-and-distance, and EPA-range filters to the play browser (the API already supports them).
-3. Add per-play provenance and tracking-quality badges (Milestone 2).
-4. Derive route geometry, defender leverage, pocket shape, and separation-over-time curves.
-5. Ingest nflverse participation data for formation and personnel in seasons that lack them.
+2. Add per-play provenance and tracking-quality badges (Milestone 2).
+3. Derive route geometry, defender leverage, pocket shape, and separation-over-time curves.
+4. Ingest nflverse participation data for formation and personnel in seasons that lack them.
 6. Train only after establishing season/game splits that prevent play-family and team leakage.

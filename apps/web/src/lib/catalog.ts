@@ -4,8 +4,15 @@ import type { JoinStatus, TrackingPlay } from "./types";
 export type PlayType = "pass" | "rush" | "other";
 
 export interface PlaySearchFilters {
+  season?: number;
+  week?: number;
   offense?: string;
+  defense?: string;
+  down?: number;
   playType?: PlayType | "";
+  epaMin?: number;
+  epaMax?: number;
+  joinStatus?: JoinStatus | "";
   text?: string;
   page?: number;
   pageSize?: number;
@@ -39,10 +46,18 @@ export interface PlayPage {
 export function buildPlaySearchUrl(filters: PlaySearchFilters = {}): string {
   const params = new URLSearchParams();
   const offense = filters.offense?.trim();
+  const defense = filters.defense?.trim();
   const text = filters.text?.trim();
 
+  if (filters.season !== undefined) params.set("season", String(filters.season));
+  if (filters.week !== undefined) params.set("week", String(filters.week));
   if (offense) params.set("offense", offense.toUpperCase());
+  if (defense) params.set("defense", defense.toUpperCase());
+  if (filters.down !== undefined) params.set("down", String(filters.down));
   if (filters.playType) params.set("play_type", filters.playType);
+  if (filters.epaMin !== undefined) params.set("epa_min", String(filters.epaMin));
+  if (filters.epaMax !== undefined) params.set("epa_max", String(filters.epaMax));
+  if (filters.joinStatus) params.set("join_status", filters.joinStatus);
   if (text) params.set("text", text);
   if (filters.page && filters.page > 1) params.set("page", String(filters.page));
   if (filters.pageSize) params.set("page_size", String(filters.pageSize));
