@@ -12,3 +12,5 @@ data/raw/*
 !data/raw/.gitkeep
 data/exports/*
 !data/exports/.gitkeep
+data/db/*
+!data/db/.gitkeep

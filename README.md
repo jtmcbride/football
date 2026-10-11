@@ -38,21 +38,35 @@ Open the Vite URL (normally <http://localhost:5173>).
 
 1. Join an NFL Big Data Bowl competition on Kaggle and accept its rules.
 2. Download and unzip `tracking_week_*.csv`, `plays.csv`, and `players.csv`.
-3. Extract one play:
+3. Build the local catalog:
 
 ```bash
-uv run football extract \
-  --tracking data/raw/tracking_week_1.csv \
-  --plays data/raw/plays.csv \
-  --players data/raw/players.csv \
+uv run football ingest bdb \
+  --input data/raw/nfl-big-data-bowl-2025 \
+  --database data/db/football.duckdb
+
+uv run football health
+uv run football plays --season 2022 --week 1 --offense BUF --play-type pass
+```
+
+The catalog validates the release, records a content fingerprint, and indexes
+games, plays, players, and weekly tracking-file locations in DuckDB. It leaves
+the large tracking CSVs in place rather than duplicating them. Re-ingesting an
+unchanged release is idempotent.
+
+To export a cataloged play for the current file-opening workflow, use:
+
+```bash
+uv run football export \
+  --database data/db/football.duckdb \
   --game-id 2022090800 \
   --play-id 56 \
   --output data/exports/2022090800-56.json
 ```
 
-Use **Open play JSON** in the app and select that export. The extractor streams
-the week CSV and retains only the selected play, so memory use does not scale
-with the full tracking file.
+Use **Open play JSON** in the app and select that export. The catalog loader
+streams the week CSV and retains only the selected play, so memory use does not
+scale with the full tracking file.
 
 The 2025 Big Data Bowl field contract is documented on the
 [official Kaggle data page](https://www.kaggle.com/competitions/nfl-big-data-bowl-2025/data).
@@ -83,6 +97,7 @@ packages/ftbdata   streaming CSV ingest, coordinate normalization, JSON export
 apps/web           React + TypeScript, custom SVG field and analysis UI
 data/raw           user-downloaded source files (gitignored)
 data/exports       extracted play JSON (gitignored)
+data/db            local DuckDB catalogs (gitignored)
 ```
 
 This mirrors the baseball project's local-first shape while keeping the first
@@ -97,14 +112,17 @@ make test
 make web-build
 ```
 
-The Python tests cover frame ordering, ball handling, player metadata, and
-leftward-play rotation. The web tests cover derived spatial metrics and event
-labels; typechecking and the production build catch the integration surface.
+The Python tests cover release validation, idempotent catalog ingestion,
+filtered play search, catalog health, frame ordering, ball handling, player
+metadata, and leftward-play rotation. The web tests cover derived spatial
+metrics and event labels; typechecking and the production build catch the
+integration surface.
 
 ## Next useful slices
 
-1. Add a DuckDB catalog of available games and plays rather than opening one JSON file.
+1. Profile cataloging against an accepted full release and add resumable fingerprint checkpoints.
 2. Join nflverse EPA/down-distance context and add filters for team, concept, coverage, and result.
-3. Derive route geometry, defender leverage, pocket shape, and separation-over-time curves.
-4. Add reliability/provenance badges so derived metrics always disclose coverage and missing fields.
-5. Train only after establishing season/game splits that prevent play-family and team leakage.
+3. Serve catalog search and play loading through the planned local FastAPI layer.
+4. Derive route geometry, defender leverage, pocket shape, and separation-over-time curves.
+5. Add reliability/provenance badges so derived metrics always disclose coverage and missing fields.
+6. Train only after establishing season/game splits that prevent play-family and team leakage.
