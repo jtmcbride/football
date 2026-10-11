@@ -1,0 +1,26 @@
+[project]
+name = "football-analysis"
+version = "0.1.0"
+description = "Local-first NFL tracking data analysis and visualization"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+football = "ftbdata.cli:main"
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+
+[tool.pytest.ini_options]
+testpaths = ["packages/ftbdata/tests"]
+pythonpath = ["packages/ftbdata/src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["packages/ftbdata/src/ftbdata"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
