@@ -19,11 +19,19 @@ are disabled with an explanation when no play-by-play data is loaded). nflverse 
 separate DuckDB tables, joined to tracking plays by game, play, and season, and
 reported as `matched`, `conflicting`, `unmatched`, or `unavailable` with measured
 coverage by season and week. All 177 plays of the official 2017 sample match the
-2017 nflverse file. Remaining work is full-release performance profiling,
-resumable fingerprint checkpoints, validation against a larger accepted Big Data
-Bowl download, the per-play quality checks and provenance display from Milestone
-2, filters for formation, personnel, and result (blocked on nflverse participation
-data for seasons that lack them), and persisting filters in the URL.
+2017 nflverse file. Milestone 2 is implemented: every play is assessed by twelve
+named checks (source rows, field bounds, frame order, 10 Hz cadence, player identity,
+football coverage, event order, entity count, play direction, yard-line cross-check,
+heading versus motion, source fields) and graded `valid`, `incomplete`, `invalid`,
+or `generated`. Ingest streams every tracking file once and stores the result in a
+`play_quality` table, so the ingest report, `football quality`, `GET /data-health`,
+the play search (`quality_status`), and the sidebar all report the same measured
+coverage; each served play carries a compact `provenance` block. Remaining work is
+full-release performance profiling, resumable fingerprint checkpoints, validation of
+the quality thresholds against a larger accepted Big Data Bowl download (they were
+exercised on controlled fixtures only), filters for formation, personnel, and result
+(blocked on nflverse participation data for seasons that lack them), and persisting
+filters in the URL.
 
 ## Objective
 
@@ -129,6 +137,22 @@ requested analysis.
 - Every served play includes a compact provenance summary.
 - The UI distinguishes valid, incomplete, generated, and unjoined data.
 - The ingestion command emits a machine-readable quality report.
+
+### Implemented grading
+
+- A check is `pass`, `info`, `unavailable`, `warning`, or `error`. A play is `invalid`
+  if any check errors, `incomplete` if any warns, otherwise `valid`; demo plays are
+  always `generated`. `info` and `unavailable` never downgrade a play, so a source
+  that simply lacks a field (the legacy 2017 sample has no `a` or `o`) is disclosed
+  in `provenance.fields.missing` rather than marked incomplete.
+- "Unjoined" is the nflverse join state (`unmatched` or `unavailable`), shown as its
+  own badge beside the tracking-quality badge.
+- Elapsed time follows frame ids (`timeMs = (frameId - firstFrameId) * 100`), so a
+  missing frame appears as a gap in the timeline instead of being closed up.
+- Rows that cannot be parsed are skipped and counted as an `error` finding instead of
+  aborting extraction.
+- The yard-line cross-check cannot detect a flipped play near midfield and is
+  `unavailable` when direction was inferred from the ball (legacy releases).
 
 ## Milestone 3: nflverse enrichment
 

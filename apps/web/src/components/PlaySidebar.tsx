@@ -1,6 +1,7 @@
 import { JOIN_STATUS_LABELS, formatEpa, formatPercent, formatScore, humanizeField } from "../lib/enrichment";
 import { frameMetrics } from "../lib/metrics";
 import type { NflverseEnrichment, TrackingPlay } from "../lib/types";
+import { ProvenanceCard } from "./ProvenanceCard";
 
 interface PlaySidebarProps {
   play: TrackingPlay;
@@ -30,6 +31,8 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
           <div><dt>Play ID</dt><dd>{play.play.playId}</dd></div>
         </dl>
       </section>
+
+      <ProvenanceCard play={play} />
 
       <NflverseCard enrichment={play.enrichment?.nflverse ?? null} />
 

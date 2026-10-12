@@ -11,6 +11,7 @@ from .catalog import (
     TrackingCatalog,
 )
 from .nflverse import EnrichmentReport, JoinCount, JoinCoverage
+from .quality import QualityCount, QualityReport
 from .tracking import extract_play, make_demo_play
 
 __all__ = [
@@ -24,6 +25,8 @@ __all__ = [
     "PlayFilters",
     "PlayPage",
     "PlaySummary",
+    "QualityCount",
+    "QualityReport",
     "TrackingCatalog",
     "extract_play",
     "make_demo_play",

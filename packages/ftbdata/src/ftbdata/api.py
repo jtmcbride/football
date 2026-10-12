@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 from .catalog import CatalogNotFoundError, PlayFilters, PlaySummary, TrackingCatalog
 from .nflverse import JoinCount, JoinCoverage, camel_case
+from .quality import QualityCount, QualityReport
 
 
 def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> FastAPI:
@@ -41,6 +42,7 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> F
             },
             "warnings": list(health.warnings),
             "nflverse": _coverage(health.join_coverage),
+            "quality": _quality(health.quality),
         }
 
     @app.get("/plays")
@@ -55,6 +57,7 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> F
         epa_min: float | None = None,
         epa_max: float | None = None,
         join_status: Literal["matched", "conflicting", "unmatched", "unavailable"] | None = None,
+        quality_status: Literal["valid", "incomplete", "invalid", "unassessed"] | None = None,
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
@@ -71,6 +74,7 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> F
                     epa_min=epa_min,
                     epa_max=epa_max,
                     join_status=join_status,
+                    quality_status=quality_status,
                 ),
                 page=page,
                 page_size=page_size,
@@ -114,6 +118,7 @@ def _play_summary(summary: PlaySummary) -> dict[str, Any]:
         "description": values["description"],
         "epa": values["epa"],
         "joinStatus": values["join_status"],
+        "qualityStatus": values["quality_status"],
     }
 
 
@@ -125,6 +130,29 @@ def _count(count: JoinCount) -> dict[str, Any]:
         "unmatched": count.unmatched,
         "unavailable": count.unavailable,
         "matchedRate": count.matched_rate,
+    }
+
+
+def _quality_count(count: QualityCount) -> dict[str, Any]:
+    return {
+        "plays": count.plays,
+        "valid": count.valid,
+        "incomplete": count.incomplete,
+        "invalid": count.invalid,
+        "validRate": count.valid_rate,
+    }
+
+
+def _quality(report: QualityReport | None) -> dict[str, Any]:
+    if report is None:
+        report = QualityReport(version=0, assessed_at=None, overall=QualityCount())
+    return {
+        "version": report.version,
+        "assessedAt": report.assessed_at,
+        "overall": _quality_count(report.overall),
+        "checks": [{"id": item.id, **item.counts} for item in report.checks],
+        "seasons": [{"season": item.season, **_quality_count(item.counts)} for item in report.seasons],
+        "weeks": [{"season": item.season, "week": item.week, **_quality_count(item.counts)} for item in report.weeks],
     }
 
 

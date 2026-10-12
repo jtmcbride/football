@@ -1,5 +1,6 @@
 import type { PlaySearchFilters, PlayType } from "./catalog";
 import type { NflverseCoverage } from "./enrichment";
+import type { QualityBadge } from "./provenance";
 import type { JoinStatus } from "./types";
 
 /** Filter state exactly as typed or selected; converted to a query by `toSearchFilters`. */
@@ -14,6 +15,7 @@ export interface BrowserFilters {
   epaMin: string;
   epaMax: string;
   joinStatus: JoinStatus | "";
+  qualityStatus: Exclude<QualityBadge, "generated"> | "";
 }
 
 export const EMPTY_FILTERS: BrowserFilters = {
@@ -27,6 +29,7 @@ export const EMPTY_FILTERS: BrowserFilters = {
   epaMin: "",
   epaMax: "",
   joinStatus: "",
+  qualityStatus: "",
 };
 
 export function toSearchFilters(filters: BrowserFilters, page: number, pageSize: number): PlaySearchFilters {
@@ -41,6 +44,7 @@ export function toSearchFilters(filters: BrowserFilters, page: number, pageSize:
     epaMin: parseNumber(filters.epaMin),
     epaMax: parseNumber(filters.epaMax),
     joinStatus: filters.joinStatus,
+    qualityStatus: filters.qualityStatus,
     page,
     pageSize,
   };
@@ -60,6 +64,7 @@ export function activeFilterCount(filters: BrowserFilters): number {
     search.epaMin,
     search.epaMax,
     search.joinStatus,
+    search.qualityStatus,
   ].filter((value) => value !== undefined && value !== "").length;
 }
 

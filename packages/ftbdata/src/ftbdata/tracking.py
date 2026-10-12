@@ -5,11 +5,12 @@ import json
 import math
 import statistics
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-FIELD_LENGTH = 120.0
-FIELD_WIDTH = 53.3
+from .field import FIELD_LENGTH, FIELD_WIDTH
+from .quality import FRAME_MS, SOURCE_FIELDS, SourceObservations, assess_play, provenance
 
 
 def _number(value: str | None, *, integer: bool = False) -> float | int | None:
@@ -22,7 +23,7 @@ def _rotate_angle(value: float | int | None) -> float | None:
     return None if value is None else round((float(value) + 180.0) % 360.0, 3)
 
 
-def _read_lookup(path: Path | None, key_fields: tuple[str, ...]) -> dict[tuple[str, ...], dict[str, str]]:
+def read_lookup(path: Path | None, key_fields: tuple[str, ...]) -> dict[tuple[str, ...], dict[str, str]]:
     if path is None:
         return {}
     with path.open(newline="", encoding="utf-8-sig") as handle:
@@ -56,15 +57,13 @@ def extract_play(
     """
 
     game_key, play_key = str(game_id), str(play_id)
-    play_lookup = _read_lookup(Path(plays_path) if plays_path else None, ("gameId", "playId"))
-    player_lookup = _read_lookup(Path(players_path) if players_path else None, ("nflId",))
-    game_lookup = _read_lookup(Path(games_path) if games_path else None, ("gameId",))
-    play_row = play_lookup.get((game_key, play_key), {})
-    game_row = game_lookup.get((game_key,), {})
+    play_lookup = read_lookup(Path(plays_path) if plays_path else None, ("gameId", "playId"))
+    player_lookup = read_lookup(Path(players_path) if players_path else None, ("nflId",))
+    game_lookup = read_lookup(Path(games_path) if games_path else None, ("gameId",))
 
     with Path(tracking_path).open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
-        tracking_headers = set(reader.fieldnames or ())
+        tracking_headers = frozenset(reader.fieldnames or ())
         tracking_rows = [
             row
             for row in reader
@@ -74,6 +73,89 @@ def extract_play(
     if not tracking_rows:
         raise ValueError(f"No tracking rows found for gameId={game_key}, playId={play_key}")
 
+    return build_play(
+        tracking_rows,
+        tracking_headers,
+        tracking_file=Path(tracking_path).name,
+        game_key=game_key,
+        play_key=play_key,
+        play_row=play_lookup.get((game_key, play_key), {}),
+        game_row=game_lookup.get((game_key,), {}),
+        player_lookup=player_lookup,
+    )
+
+
+def scan_tracking_file(
+    tracking_path: str | Path,
+    *,
+    plays: dict[tuple[str, ...], dict[str, str]],
+    games: dict[tuple[str, ...], dict[str, str]],
+    players: dict[tuple[str, ...], dict[str, str]],
+) -> Iterator[tuple[tuple[str, str], dict[str, Any] | str]]:
+    """Stream a tracking CSV once, yielding ``((game, play), play)`` for each play in ``plays``.
+
+    Rows for a play must be contiguous, as they are in Big Data Bowl releases. A play whose rows
+    reappear later in the file is yielded as an error message instead, because a partial read
+    would be assessed as if it were the whole play. A play that cannot be built is also yielded
+    as an error message rather than aborting the scan.
+    """
+
+    path = Path(tracking_path)
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        headers = frozenset(reader.fieldnames or ())
+        finished: set[tuple[str, str]] = set()
+        split: set[tuple[str, str]] = set()
+        key: tuple[str, str] | None = None
+        rows: list[dict[str, str]] = []
+
+        def flush() -> Iterator[tuple[tuple[str, str], dict[str, Any] | str]]:
+            if key is None or key not in plays or key in split:
+                return
+            try:
+                yield key, build_play(
+                    rows,
+                    headers,
+                    tracking_file=path.name,
+                    game_key=key[0],
+                    play_key=key[1],
+                    play_row=plays[key],
+                    game_row=games.get((key[0],), {}),
+                    player_lookup=players,
+                )
+            except (ValueError, KeyError) as error:
+                yield key, f"Could not be assessed: {error}"
+
+        for row in reader:
+            row_key = (row.get("gameId") or "", row.get("playId") or "")
+            if row_key != key:
+                yield from flush()
+                if key is not None:
+                    finished.add(key)
+                if row_key in finished:
+                    split.add(row_key)
+                key, rows = row_key, []
+            rows.append(row)
+        yield from flush()
+
+    for row_key in sorted(split & plays.keys()):
+        yield row_key, "Tracking rows for this play are not contiguous in the source file"
+
+
+def build_play(
+    tracking_rows: list[dict[str, str]],
+    tracking_headers: frozenset[str] | set[str],
+    *,
+    tracking_file: str,
+    game_key: str,
+    play_key: str,
+    play_row: dict[str, str],
+    game_row: dict[str, str],
+    player_lookup: dict[tuple[str, ...], dict[str, str]],
+) -> dict[str, Any]:
+    """Normalize one play's raw tracking rows and attach quality and provenance."""
+
+    observations = SourceObservations(headers=frozenset(tracking_headers), rows=len(tracking_rows))
     source_direction = next(
         (
             direction.lower()
@@ -90,24 +172,49 @@ def extract_play(
         direction_method = "inferred-line-of-scrimmage" if source_direction else "unavailable"
 
     frame_rows: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    event_by_frame: dict[int, str] = {}
+    events_by_frame: dict[int, set[str]] = defaultdict(set)
+    seen_players: set[tuple[int, int]] = set()
+    previous_frame: int | None = None
     offense = _first_nonempty(play_row, "possessionTeam")
     defense = _first_nonempty(play_row, "defensiveTeam") or _opponent(game_row, offense)
     rotate = source_direction == "left"
+    observations.rotated = rotate
 
     for row in tracking_rows:
+        for column in SOURCE_FIELDS.values():
+            if _first_nonempty(row, column) is not None:
+                observations.field_values[column] += 1
         frame_value = _first_nonempty(row, "frameId", "frame.id")
         if frame_value is None:
+            observations.rows_without_frame += 1
             continue
-        frame_id = int(frame_value)
-        nfl_id = _number(row.get("nflId"), integer=True)
-        is_ball = _is_ball_row(row, nfl_id)
-        club = _club(row, game_row, is_ball)
-        player = player_lookup.get((str(nfl_id),), {}) if nfl_id is not None else {}
-        x = float(row["x"])
-        y = float(row["y"])
-        orientation = _number(row.get("o"))
-        direction = _number(row.get("dir"))
+        try:
+            frame_id = int(frame_value)
+            nfl_id = _number(row.get("nflId"), integer=True)
+            is_ball = _is_ball_row(row, nfl_id)
+            club = _club(row, game_row, is_ball)
+            player = player_lookup.get((str(nfl_id),), {}) if nfl_id is not None else {}
+            x = float(row["x"])
+            y = float(row["y"])
+            orientation = _number(row.get("o"))
+            direction = _number(row.get("dir"))
+            speed = _number(row.get("s")) or 0.0
+            acceleration = _number(row.get("a"))
+            jersey = _number(row.get("jerseyNumber"), integer=True)
+        except (ValueError, TypeError, KeyError):
+            observations.rows_unparseable += 1
+            continue
+
+        if previous_frame is not None and frame_id < previous_frame:
+            observations.frame_regressions += 1
+        previous_frame = frame_id
+        if not is_ball and nfl_id is not None:
+            if (frame_id, nfl_id) in seen_players:
+                observations.duplicate_rows += 1
+            seen_players.add((frame_id, nfl_id))
+        if frame_id not in observations.frame_times_ms and (stamp := _timestamp_ms(row.get("time"))) is not None:
+            observations.frame_times_ms[frame_id] = stamp
+
         if rotate:
             x = FIELD_LENGTH - x
             y = FIELD_WIDTH - y
@@ -120,38 +227,42 @@ def extract_play(
             "name": _first_nonempty(row, "displayName") or _player_name(player) or "Football",
             "club": club,
             "position": _first_nonempty(player, "position", "PositionAbbr"),
-            "jersey": _number(row.get("jerseyNumber"), integer=True),
+            "jersey": jersey,
             "x": round(x, 3),
             "y": round(y, 3),
-            "speed": _number(row.get("s")) or 0.0,
-            "acceleration": _number(row.get("a")),
+            "speed": speed,
+            "acceleration": acceleration,
             "orientation": orientation,
             "direction": direction,
         }
         frame_rows[frame_id].append(entity)
         event = _first_nonempty(row, "event")
         if event:
-            event_by_frame[frame_id] = event
+            events_by_frame[frame_id].add(event)
 
+    observations.conflicting_event_frames = sum(1 for names in events_by_frame.values() if len(names) > 1)
+    event_by_frame = {frame_id: sorted(names)[0] for frame_id, names in events_by_frame.items()}
     frame_ids = sorted(frame_rows)
     if source_direction == "left" and absolute_yardline is not None:
         absolute_yardline = round(FIELD_LENGTH - float(absolute_yardline), 3)
+    first_frame = frame_ids[0] if frame_ids else 0
+    # Elapsed time follows frame ids, so a missing frame shows as a gap instead of being closed up.
     frames = [
         {
             "frameId": frame_id,
-            "timeMs": index * 100,
+            "timeMs": (frame_id - first_frame) * FRAME_MS,
             "event": event_by_frame.get(frame_id) or None,
             "entities": sorted(frame_rows[frame_id], key=lambda item: (item["kind"] != "ball", item["id"])),
         }
-        for index, frame_id in enumerate(frame_ids)
+        for frame_id in frame_ids
     ]
 
-    return {
+    play = {
         "schemaVersion": 1,
         "source": {
             "name": "NFL Big Data Bowl official sample" if "frame.id" in tracking_headers else "NFL Big Data Bowl",
             "kind": "public-competition-data",
-            "trackingFile": Path(tracking_path).name,
+            "trackingFile": tracking_file,
             "trackingFormat": "legacy-game" if "frame.id" in tracking_headers else "weekly",
             "directionMethod": direction_method,
             "missingFields": [
@@ -178,6 +289,18 @@ def extract_play(
         },
         "frames": frames,
     }
+    validation = assess_play(play, observations)
+    play["provenance"] = provenance(play, validation, observations, tracking_file=tracking_file)
+    return play
+
+
+def _timestamp_ms(value: str | None) -> float | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp() * 1000.0
+    except ValueError:
+        return None
 
 
 def _player_name(row: dict[str, str]) -> str | None:
@@ -320,7 +443,7 @@ def make_demo_play(frame_count: int = 64) -> dict[str, Any]:
             event = "pass_arrived"
         frames.append({"frameId": frame + 1, "timeMs": frame * 100, "event": event, "entities": entities})
 
-    return {
+    play = {
         "schemaVersion": 1,
         "source": {"name": "Schematic demo", "kind": "generated-demo", "trackingFile": None},
         "field": {"length": FIELD_LENGTH, "width": FIELD_WIDTH, "endZoneDepth": 10.0},
@@ -341,6 +464,9 @@ def make_demo_play(frame_count: int = 64) -> dict[str, Any]:
         },
         "frames": frames,
     }
+    validation = assess_play(play, generated=True)
+    play["provenance"] = provenance(play, validation, None, tracking_file=None)
+    return play
 
 
 def _demo_offense_position(name: str, x: float, y: float, t: float) -> tuple[float, float]:
