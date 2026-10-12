@@ -22,6 +22,7 @@ describe("buildPlaySearchUrl", () => {
       epaMin: 0,
       epaMax: -0.5,
       joinStatus: "unmatched",
+      qualityStatus: "incomplete",
     }), "http://localhost");
     expect(url.pathname).toBe("/api/plays");
     expect(Object.fromEntries(url.searchParams)).toEqual({
@@ -33,6 +34,7 @@ describe("buildPlaySearchUrl", () => {
       epa_min: "0",
       epa_max: "-0.5",
       join_status: "unmatched",
+      quality_status: "incomplete",
     });
   });
 

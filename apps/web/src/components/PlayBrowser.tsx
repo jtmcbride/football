@@ -3,6 +3,8 @@ import { fetchDataHealth, fetchPlayPage, fetchTrackingPlay } from "../lib/catalo
 import type { PlayPage, PlaySummary, PlayType } from "../lib/catalog";
 import { JOIN_STATUS_LABELS, coverageSummary, formatEpa } from "../lib/enrichment";
 import type { NflverseCoverage } from "../lib/enrichment";
+import { QUALITY_LABELS, qualityCoverageSummary } from "../lib/provenance";
+import type { QualityCoverage } from "../lib/provenance";
 import {
   EMPTY_FILTERS,
   activeFilterCount,
@@ -23,6 +25,7 @@ const PLAY_TYPES: Array<{ label: string; value: PlayType | "" }> = [
   { label: "Other", value: "other" },
 ];
 const JOIN_STATUSES = Object.keys(JOIN_STATUS_LABELS) as JoinStatus[];
+const QUALITY_FILTERS = ["valid", "incomplete", "invalid"] as const;
 
 interface PlayBrowserProps {
   currentGameId: string;
@@ -38,12 +41,19 @@ export function PlayBrowser({ currentGameId, currentPlayId, onSelectPlay }: Play
   const [error, setError] = useState<string | null>(null);
   const [loadingPlayKey, setLoadingPlayKey] = useState<string | null>(null);
   const [coverage, setCoverage] = useState<NflverseCoverage | null>(null);
+  const [quality, setQuality] = useState<QualityCoverage | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     fetchDataHealth(controller.signal)
-      .then((health) => setCoverage(health.nflverse ?? null))
-      .catch(() => setCoverage(null));
+      .then((health) => {
+        setCoverage(health.nflverse ?? null);
+        setQuality(health.quality ?? null);
+      })
+      .catch(() => {
+        setCoverage(null);
+        setQuality(null);
+      });
     return () => controller.abort();
   }, []);
 
@@ -128,6 +138,11 @@ export function PlayBrowser({ currentGameId, currentPlayId, onSelectPlay }: Play
         {coverage ? (
           <p className={`browser-coverage ${coverage.loaded && coverage.overall.matched === coverage.overall.plays ? "complete" : "partial"}`}>
             {coverageSummary(coverage)}
+          </p>
+        ) : null}
+        {quality ? (
+          <p className={`browser-coverage ${quality.overall.plays > 0 && quality.overall.valid === quality.overall.plays ? "complete" : "partial"}`}>
+            {qualityCoverageSummary(quality)}
           </p>
         ) : null}
       </div>
@@ -254,6 +269,18 @@ export function PlayBrowser({ currentGameId, currentPlayId, onSelectPlay }: Play
           </select>
         </label>
 
+        <label className="filter-field">
+          <span>Tracking</span>
+          <select
+            value={filters.qualityStatus}
+            disabled={quality === null || quality.overall.plays === 0}
+            onChange={(event) => updateFilters({ qualityStatus: event.target.value as BrowserFilters["qualityStatus"] })}
+          >
+            <option value="">Any</option>
+            {QUALITY_FILTERS.map((value) => <option key={value} value={value}>{QUALITY_LABELS[value]}</option>)}
+          </select>
+        </label>
+
         <div className="filter-field filter-actions">
           <button type="button" disabled={activeFilters === 0} onClick={clearFilters}>
             Clear{activeFilters > 0 ? ` (${activeFilters})` : ""}
@@ -306,6 +333,9 @@ export function PlayBrowser({ currentGameId, currentPlayId, onSelectPlay }: Play
                 </span>
                 <span className="play-description">
                   {summary.description || "Description unavailable"}
+                  <small className="chip-row">
+                    <span className={`quality-badge small ${summary.qualityStatus}`}>{QUALITY_LABELS[summary.qualityStatus]}</span>
+                  </small>
                   <small className={`join-chip ${summary.joinStatus}`}>
                     {JOIN_STATUS_LABELS[summary.joinStatus]}
                     {summary.epa !== null ? ` · EPA ${formatEpa(summary.epa)}` : ""}

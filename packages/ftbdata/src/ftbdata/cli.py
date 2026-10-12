@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .catalog import CatalogError, CatalogValidationError, PlayFilters, TrackingCatalog
 from .nflverse import JOIN_STATUSES
+from .quality import PLAY_STATUSES
 from .tracking import extract_play, make_demo_play, write_play
 
 
@@ -51,11 +52,24 @@ def parser() -> argparse.ArgumentParser:
     plays.add_argument("--epa-min", type=float)
     plays.add_argument("--epa-max", type=float)
     plays.add_argument("--join-status", choices=JOIN_STATUSES)
+    plays.add_argument("--quality-status", choices=(*PLAY_STATUSES, "unassessed"))
     plays.add_argument("--page", type=int, default=1)
     plays.add_argument("--page-size", type=int, default=50)
 
     health = commands.add_parser("health", help="Report local tracking-catalog readiness")
     health.add_argument("--database", type=Path, default=Path("data/db/football.duckdb"))
+
+    quality = commands.add_parser(
+        "quality", help="Emit the machine-readable tracking-quality report for a local catalog"
+    )
+    quality.add_argument("--database", type=Path, default=Path("data/db/football.duckdb"))
+    quality.add_argument(
+        "--status",
+        action="append",
+        choices=PLAY_STATUSES,
+        help="List per-play findings for plays with this status (repeatable; default: incomplete and invalid)",
+    )
+    quality.add_argument("--summary-only", action="store_true", help="Omit the per-play findings")
 
     export = commands.add_parser("export", help="Export one cataloged play to web JSON")
     export.add_argument("--database", type=Path, default=Path("data/db/football.duckdb"))
@@ -100,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
                     epa_min=args.epa_min,
                     epa_max=args.epa_max,
                     join_status=args.join_status,
+                    quality_status=args.quality_status,
                 ),
                 page=args.page,
                 page_size=args.page_size,
@@ -110,6 +125,13 @@ def main(argv: list[str] | None = None) -> int:
             health = TrackingCatalog(args.database).data_health()
             print(json.dumps(asdict(health), indent=2))
             return 0 if health.ready else 1
+        if args.command == "quality":
+            catalog = TrackingCatalog(args.database)
+            report = {"report": asdict(catalog.quality_report())}
+            if not args.summary_only:
+                report["plays"] = list(catalog.play_quality(tuple(args.status or ("incomplete", "invalid"))))
+            print(json.dumps(report, indent=2))
+            return 0
         if args.command == "export":
             play = TrackingCatalog(args.database).load_play(args.game_id, args.play_id)
             write_play(play, args.output)

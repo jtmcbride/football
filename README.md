@@ -57,6 +57,28 @@ games, plays, players, and weekly tracking-file locations in DuckDB. It leaves
 the large tracking CSVs in place rather than duplicating them. Re-ingesting an
 unchanged release is idempotent.
 
+### Tracking quality and provenance
+
+Ingest also streams every tracking file once and assesses each play (field bounds,
+frame order, 10 Hz cadence, player identity, football coverage, event order, entity
+count, direction normalization, and more). Expect a few minutes for a full release.
+The ingest output includes a machine-readable `quality` summary; to re-emit it later,
+or to list every play that is not valid with its findings:
+
+```bash
+uv run football quality --database data/db/football.duckdb
+uv run football quality --status invalid --summary-only
+uv run football plays --quality-status incomplete
+```
+
+Plays are graded `valid`, `incomplete` (usable but missing or suspect data),
+`invalid` (corrupt), or `generated` (the demo). Every served play carries a
+`provenance` block (release, files, software version, direction handling, available
+and missing source fields, nflverse join status, and the full check results), and the
+web app shows it beside the replay. Fields a source never provides, such as
+acceleration in the legacy 2017 sample, are disclosed but do not make a play
+incomplete.
+
 ### Add nflverse play-by-play context
 
 Download `play_by_play_<season>.parquet` for the seasons in your catalog from the

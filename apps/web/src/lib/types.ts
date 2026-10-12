@@ -58,6 +58,41 @@ export interface NflverseEnrichment {
   fields: NflverseFields | null;
 }
 
+export type PlayQualityStatus = "valid" | "incomplete" | "invalid" | "generated";
+export type CheckStatus = "pass" | "info" | "unavailable" | "warning" | "error";
+
+export interface QualityCheck {
+  id: string;
+  label: string;
+  status: CheckStatus;
+  detail: string;
+  count?: number;
+}
+
+/** Compact provenance served with every catalog play; absent from older exports. */
+export interface Provenance {
+  /** Null for a standalone extraction or generated play, which belong to no cataloged release. */
+  release: {
+    name: string;
+    competitionYear: number | null;
+    season: number | null;
+    fingerprint: string;
+    ingestedAt: string;
+  } | null;
+  files: string[];
+  software: { name: string; version: string };
+  direction: { original: string; normalized: string; method: string | null; rotated: boolean };
+  fields: { available: string[]; missing: string[] };
+  nflverse: { status: JoinStatus; fingerprint: string | null } | null;
+  validation: {
+    version: number;
+    status: PlayQualityStatus;
+    errors: number;
+    warnings: number;
+    checks: QualityCheck[];
+  };
+}
+
 export interface TrackingPlay {
   schemaVersion: number;
   source: {
@@ -90,4 +125,5 @@ export interface TrackingPlay {
   };
   frames: TrackingFrame[];
   enrichment?: { nflverse?: NflverseEnrichment };
+  provenance?: Provenance;
 }

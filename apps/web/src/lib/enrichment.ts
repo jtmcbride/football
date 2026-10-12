@@ -1,3 +1,4 @@
+import type { QualityCoverage } from "./provenance";
 import type { JoinStatus } from "./types";
 
 export interface JoinCount {
@@ -22,6 +23,7 @@ export interface DataHealth {
   counts: { games: number; plays: number; players: number; trackingFiles: number };
   warnings: string[];
   nflverse: NflverseCoverage;
+  quality?: QualityCoverage;
 }
 
 export const JOIN_STATUS_LABELS: Record<JoinStatus, string> = {

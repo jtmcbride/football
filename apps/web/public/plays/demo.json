@@ -21082,5 +21082,104 @@
         }
       ]
     }
-  ]
+  ],
+  "provenance": {
+    "release": null,
+    "files": [],
+    "software": {
+      "name": "football-analysis",
+      "version": "0.1.0"
+    },
+    "direction": {
+      "original": "right",
+      "normalized": "right",
+      "method": null,
+      "rotated": false
+    },
+    "fields": {
+      "available": [],
+      "missing": []
+    },
+    "nflverse": null,
+    "validation": {
+      "version": 1,
+      "status": "generated",
+      "errors": 0,
+      "warnings": 0,
+      "checks": [
+        {
+          "id": "rows",
+          "label": "Source rows",
+          "status": "unavailable",
+          "detail": "Source rows were not recorded"
+        },
+        {
+          "id": "coordinates",
+          "label": "Field bounds",
+          "status": "pass",
+          "detail": "All 1472 positions are inside the 120 \u00d7 53.3 yd field"
+        },
+        {
+          "id": "frame-order",
+          "label": "Frame order",
+          "status": "unavailable",
+          "detail": "Source row order was not recorded"
+        },
+        {
+          "id": "cadence",
+          "label": "10 Hz cadence",
+          "status": "pass",
+          "detail": "64 consecutive frames at 100 ms, from frame ids only (no usable timestamps)"
+        },
+        {
+          "id": "identity",
+          "label": "Player identity",
+          "status": "pass",
+          "detail": "22 players keep one team and jersey in every frame"
+        },
+        {
+          "id": "ball",
+          "label": "Football coverage",
+          "status": "pass",
+          "detail": "Football present in all 64 frames"
+        },
+        {
+          "id": "events",
+          "label": "Event order",
+          "status": "pass",
+          "detail": "3 annotated events are in a consistent order"
+        },
+        {
+          "id": "entity-count",
+          "label": "Entity count",
+          "status": "pass",
+          "detail": "22 players on two teams in every frame"
+        },
+        {
+          "id": "direction",
+          "label": "Play direction",
+          "status": "pass",
+          "detail": "Original direction right; already left-to-right"
+        },
+        {
+          "id": "yardline",
+          "label": "Yard line cross-check",
+          "status": "pass",
+          "detail": "At the snap the football is 0.1 yd from the line of scrimmage"
+        },
+        {
+          "id": "heading",
+          "label": "Heading vs. motion",
+          "status": "unavailable",
+          "detail": "Schematic headings are placeholders, not measurements"
+        },
+        {
+          "id": "source-fields",
+          "label": "Source fields",
+          "status": "unavailable",
+          "detail": "Source columns were not recorded"
+        }
+      ]
+    }
+  }
 }

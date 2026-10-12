@@ -5,6 +5,7 @@ import { PlaySidebar } from "./components/PlaySidebar";
 import { Timeline } from "./components/Timeline";
 import { fetchTrackingPlay } from "./lib/catalog";
 import { clampFrame, isLinkedTo, parsePlayLink, withPlayLink, withoutPlayLink } from "./lib/playLink";
+import { qualityBadge } from "./lib/provenance";
 import type { TrackingPlay } from "./lib/types";
 
 const INITIAL_PLAY_URLS = ["/plays/local-sample.json", "/plays/demo.json"] as const;
@@ -244,7 +245,7 @@ export default function App() {
         <section className="data-notes" id="data-notes">
           <div>
             <p className="eyebrow">DATA BOUNDARY</p>
-            <h2>{play.source.kind === "generated-demo" ? "The viewer is ready for real tracking. The demo is not real NFL data." : "This replay uses real public NFL tracking data."}</h2>
+            <h2>{dataBoundaryHeadline(play)}</h2>
           </div>
           {play.source.kind === "generated-demo" ? (
             <p>Run <code>make sample</code> after downloading the official sample to load a real tracked play. Larger Big Data Bowl releases require acceptance of their competition rules.</p>
@@ -263,6 +264,14 @@ export default function App() {
       </footer>
     </div>
   );
+}
+
+function dataBoundaryHeadline(play: TrackingPlay): string {
+  if (play.source.kind === "generated-demo") return "The viewer is ready for real tracking. The demo is not real NFL data.";
+  const status = qualityBadge(play);
+  if (status === "invalid") return "This is real NFL tracking data that failed validation. Treat it as unreliable.";
+  if (status === "incomplete") return "This replay uses real public NFL tracking data with gaps. See the provenance panel.";
+  return "This replay uses real public NFL tracking data.";
 }
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {

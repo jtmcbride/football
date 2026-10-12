@@ -11,11 +11,12 @@ from typing import Any, Iterable
 
 import duckdb
 
-from . import nflverse
+from . import nflverse, quality
 from .nflverse import EnrichmentReport, JoinCount, JoinCoverage, PbpFile, SeasonCoverage, WeekCoverage
-from .tracking import extract_play
+from .quality import QualityReport
+from .tracking import extract_play, read_lookup, scan_tracking_file
 
-CATALOG_SCHEMA_VERSION = 3
+CATALOG_SCHEMA_VERSION = 4
 TRACKING_FILE_PATTERN = re.compile(r"tracking_week_(\d+)\.csv$")
 LEGACY_TRACKING_FILE_PATTERN = re.compile(r"tracking_gameId_(\d+)\.csv$")
 
@@ -45,6 +46,9 @@ REQUIRED_HEADERS = {
     },
 }
 
+
+_QUALITY_JOIN_SQL = "LEFT JOIN play_quality q ON q.game_id = p.game_id AND q.play_id = p.play_id"
+_QUALITY_STATUS_SQL = "COALESCE(q.status, 'unassessed')"
 
 # A play is searchable only when a tracking file backs it.
 _TRACKED_SQL = (
@@ -81,6 +85,7 @@ class PlayFilters:
     epa_min: float | None = None
     epa_max: float | None = None
     join_status: str | None = None
+    quality_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +105,7 @@ class PlaySummary:
     description: str
     epa: float | None = None
     join_status: str = "unavailable"
+    quality_status: str = "unassessed"
 
 
 @dataclass(frozen=True)
@@ -122,6 +128,7 @@ class IngestReport:
     warnings: tuple[str, ...]
     errors: tuple[str, ...] = ()
     reused: bool = False
+    quality: QualityReport | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +144,7 @@ class DataHealth:
     tracking_files: int
     warnings: tuple[str, ...]
     join_coverage: JoinCoverage | None = None
+    quality: QualityReport | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +194,7 @@ class TrackingCatalog:
                     tracking_files=health.tracking_files,
                     warnings=health.warnings,
                     reused=True,
+                    quality=health.quality,
                 )
 
             try:
@@ -242,9 +251,13 @@ class TrackingCatalog:
                     "direction is inferred from the line of scrimmage when possible"
                 )
 
+            assessments = self._assess_release(discovered, games, plays, tracking_files)
+
             connection.execute("BEGIN TRANSACTION")
             try:
-                for table in ("catalog_metadata", "source_files", "tracking_files", "games", "plays", "players"):
+                for table in (
+                    "catalog_metadata", "source_files", "tracking_files", "games", "plays", "players", "play_quality"
+                ):
                     connection.execute(f"DELETE FROM {table}")
 
                 connection.executemany(
@@ -270,6 +283,7 @@ class TrackingCatalog:
                     "INSERT INTO tracking_files VALUES (?, ?, ?)",
                     [(str(item.path), item.week, item.game_id) for item in tracking_files],
                 )
+                connection.executemany("INSERT INTO play_quality VALUES (?, ?, ?, ?, ?, ?)", assessments)
 
                 metadata = {
                     "schema_version": str(CATALOG_SCHEMA_VERSION),
@@ -281,6 +295,7 @@ class TrackingCatalog:
                     "players_path": str(discovered["players"]),
                     "source_format": discovered["source_format"],
                     "warnings": json.dumps(warnings),
+                    "quality_version": str(quality.QUALITY_VERSION),
                     "status": "ready",
                 }
                 connection.executemany(
@@ -301,6 +316,7 @@ class TrackingCatalog:
                 players=len(players),
                 tracking_files=len(tracking_files),
                 warnings=tuple(warnings),
+                quality=self._quality_report(connection),
             )
         finally:
             connection.close()
@@ -345,21 +361,28 @@ class TrackingCatalog:
                 raise ValueError(f"join_status must be one of: {', '.join(nflverse.JOIN_STATUSES)}")
             clauses.append(f"({nflverse.STATUS_SQL}) = ?")
             parameters.append(filters.join_status)
+        if filters.quality_status is not None:
+            if filters.quality_status not in (*quality.PLAY_STATUSES, "unassessed"):
+                raise ValueError(
+                    f"quality_status must be one of: {', '.join((*quality.PLAY_STATUSES, 'unassessed'))}"
+                )
+            clauses.append(f"{_QUALITY_STATUS_SQL} = ?")
+            parameters.append(filters.quality_status)
         clauses.append(_TRACKED_SQL)
 
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        where = " WHERE " + " AND ".join(clauses)
         connection = self._connect_existing()
         try:
             self._require_ready(connection)
             total = connection.execute(
-                f"SELECT COUNT(*) FROM plays p JOIN games g USING (game_id) {nflverse.JOIN_SQL}{where}",
+                f"SELECT COUNT(*) FROM plays p JOIN games g USING (game_id) {nflverse.JOIN_SQL} {_QUALITY_JOIN_SQL}{where}",
                 parameters,
             ).fetchone()[0]
             rows = connection.execute(
                 "SELECT p.game_id, p.play_id, g.season, g.week, g.game_date, "
                 "p.offense, p.defense, p.quarter, p.down, p.yards_to_go, "
-                f"p.yards_gained, p.play_type, p.description, n.epa, {nflverse.STATUS_SQL} "
-                f"FROM plays p JOIN games g USING (game_id) {nflverse.JOIN_SQL}{where} "
+                f"p.yards_gained, p.play_type, p.description, n.epa, {nflverse.STATUS_SQL}, {_QUALITY_STATUS_SQL} "
+                f"FROM plays p JOIN games g USING (game_id) {nflverse.JOIN_SQL} {_QUALITY_JOIN_SQL}{where} "
                 "ORDER BY g.season DESC, g.week, p.game_id, TRY_CAST(p.play_id AS BIGINT), p.play_id "
                 "LIMIT ? OFFSET ?",
                 [*parameters, page_size, (page - 1) * page_size],
@@ -380,13 +403,13 @@ class TrackingCatalog:
         try:
             self._require_ready(connection)
             row = connection.execute(
-                "SELECT g.week FROM plays p JOIN games g USING (game_id) "
+                "SELECT g.week, g.season FROM plays p JOIN games g USING (game_id) "
                 "WHERE p.game_id = ? AND p.play_id = ?",
                 [game_key, play_key],
             ).fetchone()
             if row is None:
                 raise CatalogNotFoundError(f"Play gameId={game_key}, playId={play_key} is not cataloged")
-            week = row[0]
+            week, season = row
             tracking_row = connection.execute(
                 "SELECT path FROM tracking_files "
                 "WHERE game_id = ? OR (game_id IS NULL AND week = ?) "
@@ -414,6 +437,19 @@ class TrackingCatalog:
         play["source"]["releaseFingerprint"] = metadata["fingerprint"]
         play["source"]["catalogSchemaVersion"] = CATALOG_SCHEMA_VERSION
         play["enrichment"] = {"nflverse": enrichment}
+        release = Path(metadata["source_root"])
+        provenance = play["provenance"]
+        provenance["release"] = {
+            "name": release.name,
+            "competitionYear": _competition_year(release.name),
+            "season": season,
+            "fingerprint": metadata["fingerprint"],
+            "ingestedAt": metadata["ingested_at"],
+        }
+        provenance["files"] = [
+            Path(metadata[key]).name for key in ("games_path", "plays_path", "players_path")
+        ] + provenance["files"]
+        provenance["nflverse"] = {"status": enrichment["status"], "fingerprint": enrichment["fingerprint"]}
         return play
 
     def ingest_nflverse(self, source_directory: str | Path) -> EnrichmentReport:
@@ -495,6 +531,46 @@ class TrackingCatalog:
         finally:
             connection.close()
 
+    def quality_report(self) -> QualityReport:
+        """Measured tracking quality by check, season, and week."""
+        if not self.database_path.exists():
+            return quality.summarize([], None)
+        connection = self._connect_existing()
+        try:
+            self._initialize_schema(connection)
+            return self._quality_report(connection)
+        finally:
+            connection.close()
+
+    def play_quality(self, statuses: Iterable[str] = (quality.INCOMPLETE, quality.INVALID)) -> tuple[dict[str, Any], ...]:
+        """Per-play findings for plays whose assessed status is in ``statuses``."""
+        wanted = tuple(statuses)
+        connection = self._connect_existing()
+        try:
+            self._require_ready(connection)
+            rows = connection.execute(
+                "SELECT q.game_id, q.play_id, g.season, g.week, q.status, q.errors, q.warnings, q.findings_json "
+                "FROM play_quality q JOIN plays p ON p.game_id = q.game_id AND p.play_id = q.play_id "
+                f"JOIN games g ON g.game_id = p.game_id WHERE {_TRACKED_SQL} "
+                "ORDER BY g.season, g.week, q.game_id, TRY_CAST(q.play_id AS BIGINT), q.play_id"
+            ).fetchall()
+        finally:
+            connection.close()
+        return tuple(
+            {
+                "game_id": game_id,
+                "play_id": play_id,
+                "season": season,
+                "week": week,
+                "status": status,
+                "errors": errors,
+                "warnings": warnings,
+                "findings": json.loads(findings),
+            }
+            for game_id, play_id, season, week, status, errors, warnings, findings in rows
+            if status in wanted
+        )
+
     def join_coverage(self) -> JoinCoverage:
         if not self.database_path.exists():
             return JoinCoverage(loaded=False, overall=JoinCount())
@@ -514,6 +590,71 @@ class TrackingCatalog:
             return self._data_health(connection)
         finally:
             connection.close()
+
+    @staticmethod
+    def _assess_release(
+        discovered: dict[str, Any],
+        games: tuple[tuple[Any, ...], ...],
+        plays: tuple[tuple[Any, ...], ...],
+        tracking_files: tuple[_SourceFile, ...],
+    ) -> list[tuple[Any, ...]]:
+        """Stream every tracking file once and assess each cataloged play with ``quality.assess_play``."""
+        play_lookup = read_lookup(discovered["plays"], ("gameId", "playId"))
+        game_lookup = read_lookup(discovered["games"], ("gameId",))
+        player_lookup = read_lookup(discovered["players"], ("nflId",))
+        week_by_game = {row[0]: row[2] for row in games}
+
+        validations: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in tracking_files:
+            selected = {
+                (row[0], row[1]): play_lookup[(row[0], row[1])]
+                for row in plays
+                if (row[0], row[1]) in play_lookup
+                and (row[0] == item.game_id if item.game_id is not None else week_by_game.get(row[0]) == item.week)
+            }
+            try:
+                for key, outcome in scan_tracking_file(
+                    item.path, plays=selected, games=game_lookup, players=player_lookup
+                ):
+                    validations[key] = (
+                        quality.failed_validation(outcome)
+                        if isinstance(outcome, str)
+                        else outcome["provenance"]["validation"]
+                    )
+            except (OSError, UnicodeDecodeError, csv.Error) as error:
+                raise CatalogValidationError([f"Could not read {item.path.name}: {error}"]) from error
+            for key in selected:
+                validations.setdefault(
+                    key, quality.failed_validation(f"No tracking rows for this play in {item.path.name}")
+                )
+
+        return [
+            (
+                row[0],
+                row[1],
+                validation["status"],
+                validation["errors"],
+                validation["warnings"],
+                json.dumps(quality.non_pass_checks(validation), separators=(",", ":")),
+            )
+            for row in plays
+            if (validation := validations.get((row[0], row[1]))) is not None
+        ]
+
+    @staticmethod
+    def _quality_report(connection: duckdb.DuckDBPyConnection) -> QualityReport:
+        rows = connection.execute(
+            "SELECT g.season, g.week, q.status, q.findings_json "
+            "FROM play_quality q JOIN plays p ON p.game_id = q.game_id AND p.play_id = q.play_id "
+            f"JOIN games g ON g.game_id = p.game_id WHERE {_TRACKED_SQL}"
+        ).fetchall()
+        assessed_at = connection.execute(
+            "SELECT value FROM catalog_metadata WHERE key = 'ingested_at'"
+        ).fetchone()
+        return quality.summarize(
+            ((season, week, status, json.loads(findings)) for season, week, status, findings in rows),
+            assessed_at[0] if assessed_at and rows else None,
+        )
 
     def _discover_release(self, source_root: Path) -> dict[str, Any]:
         if not source_root.is_dir():
@@ -746,6 +887,15 @@ class TrackingCatalog:
                 weight INTEGER,
                 college VARCHAR
             );
+            CREATE TABLE IF NOT EXISTS play_quality (
+                game_id VARCHAR,
+                play_id VARCHAR,
+                status VARCHAR NOT NULL,
+                errors INTEGER NOT NULL,
+                warnings INTEGER NOT NULL,
+                findings_json VARCHAR NOT NULL,
+                PRIMARY KEY (game_id, play_id)
+            );
             CREATE INDEX IF NOT EXISTS plays_offense_idx ON plays(offense);
             CREATE INDEX IF NOT EXISTS plays_defense_idx ON plays(defense);
             CREATE INDEX IF NOT EXISTS games_season_week_idx ON games(season, week);
@@ -883,7 +1033,13 @@ class TrackingCatalog:
             tracking_files=count("tracking_files"),
             warnings=tuple(json.loads(metadata.get("warnings", "[]"))),
             join_coverage=cls._join_coverage(connection),
+            quality=cls._quality_report(connection),
         )
+
+
+def _competition_year(release_name: str) -> int | None:
+    match = re.search(r"big-data-bowl-(\d{4})", release_name, re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def _csv_rows(path: Path) -> Iterable[dict[str, str]]:

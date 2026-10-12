@@ -1,4 +1,5 @@
 import type { DataHealth } from "./enrichment";
+import type { QualityBadge } from "./provenance";
 import type { JoinStatus, TrackingPlay } from "./types";
 
 export type PlayType = "pass" | "rush" | "other";
@@ -13,6 +14,7 @@ export interface PlaySearchFilters {
   epaMin?: number;
   epaMax?: number;
   joinStatus?: JoinStatus | "";
+  qualityStatus?: Exclude<QualityBadge, "generated"> | "";
   text?: string;
   page?: number;
   pageSize?: number;
@@ -34,6 +36,7 @@ export interface PlaySummary {
   description: string;
   epa: number | null;
   joinStatus: JoinStatus;
+  qualityStatus: QualityBadge;
 }
 
 export interface PlayPage {
@@ -58,6 +61,7 @@ export function buildPlaySearchUrl(filters: PlaySearchFilters = {}): string {
   if (filters.epaMin !== undefined) params.set("epa_min", String(filters.epaMin));
   if (filters.epaMax !== undefined) params.set("epa_max", String(filters.epaMax));
   if (filters.joinStatus) params.set("join_status", filters.joinStatus);
+  if (filters.qualityStatus) params.set("quality_status", filters.qualityStatus);
   if (text) params.set("text", text);
   if (filters.page && filters.page > 1) params.set("page", String(filters.page));
   if (filters.pageSize) params.set("page_size", String(filters.pageSize));
