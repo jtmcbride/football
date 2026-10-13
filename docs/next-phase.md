@@ -27,11 +27,15 @@ or `generated`. Ingest streams every tracking file once and stores the result in
 `play_quality` table, so the ingest report, `football quality`, `GET /data-health`,
 the play search (`quality_status`), and the sidebar all report the same measured
 coverage; each served play carries a compact `provenance` block. Remaining work is
-full-release performance profiling, resumable fingerprint checkpoints, validation of
-the quality thresholds against a larger accepted Big Data Bowl download (they were
-exercised on controlled fixtures only), filters for formation, personnel, and result
-(blocked on nflverse participation data for seasons that lack them), and persisting
-filters in the URL.
+full-release performance profiling, resumable fingerprint checkpoints, filters for
+formation, personnel, and result (blocked on nflverse participation data for seasons
+that lack them), and persisting filters in the URL. The thresholds were validated
+against the NFL's official 2017 single-game sample: 169 of 177 plays are valid, eight
+are incomplete, and none are invalid. The remaining warnings are five short coordinate
+dropouts, one 21-player play, one play whose direction cannot be inferred at midfield,
+and one event-alignment inconsistency. This is still only one game. The legacy source
+has no acceleration or orientation, and its yard-line cross-check is unavailable
+because direction and the line of scrimmage are inferred from the same ball positions.
 
 ## Objective
 
@@ -112,7 +116,7 @@ requested analysis.
 
 ### Quality checks
 
-- coordinates remain within the 120 by 53.3 yard field
+- coordinates remain finite and off-field excursions stay within a plausible tracking perimeter
 - frames are ordered and frame identifiers are unique within a play
 - timing is consistent with the expected 10 Hz tracking cadence
 - player identities are stable across frames
@@ -149,8 +153,13 @@ requested analysis.
   own badge beside the tracking-quality badge.
 - Elapsed time follows frame ids (`timeMs = (frameId - firstFrameId) * 100`), so a
   missing frame appears as a gap in the timeline instead of being closed up.
-- Rows that cannot be parsed are skipped and counted as an `error` finding instead of
-  aborting extraction.
+- Rows that cannot be parsed are skipped and counted as a `warning` finding instead of
+  aborting extraction; duplicate player rows remain an `error` because they are ambiguous.
+- Entity-major source rows are checked within each entity's timeline, and source
+  timestamps are used for cadence only when their disclosed precision can resolve 100 ms.
+- The official 2017 sample records legitimate boundary movement up to 16.1 yd outside
+  the painted field. Excursions up to 20 yd are disclosed as `info`; larger values warn,
+  and values beyond 50 yd error.
 - The yard-line cross-check cannot detect a flipped play near midfield and is
   `unavailable` when direction was inferred from the ball (legacy releases).
 

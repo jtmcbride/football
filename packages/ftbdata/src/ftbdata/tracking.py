@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import re
 import statistics
 from collections import defaultdict
 from datetime import datetime
@@ -174,7 +175,7 @@ def build_play(
     frame_rows: dict[int, list[dict[str, Any]]] = defaultdict(list)
     events_by_frame: dict[int, set[str]] = defaultdict(set)
     seen_players: set[tuple[int, int]] = set()
-    previous_frame: int | None = None
+    previous_frames: dict[str, int] = {}
     offense = _first_nonempty(play_row, "possessionTeam")
     defense = _first_nonempty(play_row, "defensiveTeam") or _opponent(game_row, offense)
     rotate = source_direction == "left"
@@ -205,15 +206,21 @@ def build_play(
             observations.rows_unparseable += 1
             continue
 
+        entity_key = "ball" if is_ball else str(nfl_id)
+        previous_frame = previous_frames.get(entity_key)
         if previous_frame is not None and frame_id < previous_frame:
             observations.frame_regressions += 1
-        previous_frame = frame_id
+        previous_frames[entity_key] = frame_id
         if not is_ball and nfl_id is not None:
             if (frame_id, nfl_id) in seen_players:
                 observations.duplicate_rows += 1
             seen_players.add((frame_id, nfl_id))
-        if frame_id not in observations.frame_times_ms and (stamp := _timestamp_ms(row.get("time"))) is not None:
+        raw_time = row.get("time")
+        stamp = _timestamp_ms(raw_time)
+        if frame_id not in observations.frame_times_ms and stamp is not None:
             observations.frame_times_ms[frame_id] = stamp
+        if stamp is not None and (precision := _timestamp_precision_ms(raw_time)) is not None:
+            observations.timestamp_precision_ms = max(observations.timestamp_precision_ms or 0.0, precision)
 
         if rotate:
             x = FIELD_LENGTH - x
@@ -301,6 +308,17 @@ def _timestamp_ms(value: str | None) -> float | None:
         return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp() * 1000.0
     except ValueError:
         return None
+
+
+def _timestamp_precision_ms(value: str | None) -> float | None:
+    """Resolution disclosed by an ISO timestamp, in milliseconds."""
+    if value is None or not value.strip():
+        return None
+    match = re.search(r"\.(\d+)", value)
+    if match is None:
+        return 1000.0
+    digits = min(len(match.group(1)), 3)
+    return float(10 ** (3 - digits))
 
 
 def _player_name(row: dict[str, str]) -> str | None:
