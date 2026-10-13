@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { JOIN_STATUS_LABELS, formatEpa, formatPercent, formatScore, humanizeField } from "../lib/enrichment";
 import { frameMetrics } from "../lib/metrics";
 import type { NflverseEnrichment, TrackingPlay } from "../lib/types";
@@ -11,7 +12,16 @@ interface PlaySidebarProps {
 
 export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarProps) {
   const metrics = frameMetrics(play, frameIndex);
-  const entity = play.frames[frameIndex].entities.find((candidate) => candidate.id === selectedEntityId);
+  const trackedEntity = play.frames[frameIndex].entities.find((candidate) => candidate.id === selectedEntityId);
+  const selectedEntity = useMemo(() => {
+    if (!selectedEntityId) return undefined;
+    for (const frame of play.frames) {
+      const candidate = frame.entities.find((item) => item.id === selectedEntityId);
+      if (candidate) return candidate;
+    }
+    return undefined;
+  }, [play.frames, selectedEntityId]);
+  const entity = trackedEntity ?? selectedEntity;
 
   return (
     <aside className="sidebar">
@@ -47,10 +57,10 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
             <p>{entity.club} · {entity.position ?? "Position unavailable"}</p>
           </div>
           <dl className="selected-stats">
-            <div><dt>Speed</dt><dd>{entity.speed.toFixed(1)} <small>yd/s</small></dd></div>
-            <div><dt>Accel.</dt><dd>{entity.acceleration === null ? "—" : entity.acceleration.toFixed(1)} {entity.acceleration === null ? null : <small>yd/s²</small>}</dd></div>
-            <div><dt>Field x</dt><dd>{entity.x.toFixed(1)} <small>yd</small></dd></div>
-            <div><dt>Field y</dt><dd>{entity.y.toFixed(1)} <small>yd</small></dd></div>
+            <div><dt>Speed</dt><dd>{trackedEntity ? trackedEntity.speed.toFixed(1) : "Unavailable"} {trackedEntity ? <small>yd/s</small> : null}</dd></div>
+            <div><dt>Accel.</dt><dd>{trackedEntity?.acceleration === null || !trackedEntity ? "Unavailable" : trackedEntity.acceleration.toFixed(1)} {trackedEntity?.acceleration === null || !trackedEntity ? null : <small>yd/s²</small>}</dd></div>
+            <div><dt>Field x</dt><dd>{trackedEntity ? trackedEntity.x.toFixed(1) : "Unavailable"} {trackedEntity ? <small>yd</small> : null}</dd></div>
+            <div><dt>Field y</dt><dd>{trackedEntity ? trackedEntity.y.toFixed(1) : "Unavailable"} {trackedEntity ? <small>yd</small> : null}</dd></div>
           </dl>
         </section>
       ) : (

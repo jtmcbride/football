@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FieldReplay } from "./components/FieldReplay";
 import { PlayBrowser } from "./components/PlayBrowser";
+import { PlayerAnalysis } from "./components/PlayerAnalysis";
 import { PlaySidebar } from "./components/PlaySidebar";
 import { Timeline } from "./components/Timeline";
 import { fetchTrackingPlay } from "./lib/catalog";
@@ -237,6 +238,12 @@ export default function App() {
                 setIsPlaying((current) => !current);
               }}
               onRateChange={setPlaybackRate}
+            />
+            <PlayerAnalysis
+              play={play}
+              frameIndex={frameIndex}
+              selectedEntityId={selectedEntityId}
+              onFrameChange={changeFrame}
             />
           </div>
           <PlaySidebar play={play} frameIndex={frameIndex} selectedEntityId={selectedEntityId} />
