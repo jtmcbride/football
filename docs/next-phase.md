@@ -236,7 +236,7 @@ useful development and import path.
 
 Add descriptive spatial analysis before attempting predictive modeling.
 
-Milestone 6A implements the selected-player slice: speed and nearest-opponent
+Milestone 6 is implemented in two descriptive slices. In 6A, speed and nearest-opponent
 time series share the replay playhead; route depth, signed lateral movement, and
 straight-line displacement are measured from the snap; nearest-opponent identity
 is reported per frame; and snap, release, arrival, catch, and tackle markers are
@@ -245,7 +245,14 @@ from the snap through the first tackle, or the final tracked frame when no tackl
 is present. Missing observations remain visible gaps, and unavailable acceleration
 is never zero-filled. Controlled geometry tests cover known distances, missing
 frames, absent snap baselines, and both tackle-ended and final-frame windows.
-Centroids, spatial spread, quarterback depth, and pocket shape remain for 6B.
+6B adds offense and defense centroids, RMS spatial spread, centroid separation,
+quarterback depth from his normalized snap point, and a field overlay for the
+protection envelope. The envelope is explicitly a convex hull of the quarterback
+and tracked offensive linemen, not an inference about assignments, pressure, or
+protection quality. Team-count gaps disclose that only tracked players contribute.
+Controlled fixtures verify centroids, spread, depth, hull dimensions, and area.
+Acceleration remains unavailable in the 2017 source and is disclosed rather than
+zero-filled; its profile still needs validation on a source that provides the field.
 
 ### Measurements
 

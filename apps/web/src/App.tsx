@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FieldReplay } from "./components/FieldReplay";
 import { PlayBrowser } from "./components/PlayBrowser";
 import { PlayerAnalysis } from "./components/PlayerAnalysis";
 import { PlaySidebar } from "./components/PlaySidebar";
+import { TeamShapePanel } from "./components/TeamShapePanel";
 import { Timeline } from "./components/Timeline";
 import { fetchTrackingPlay } from "./lib/catalog";
 import { clampFrame, isLinkedTo, parsePlayLink, withPlayLink, withoutPlayLink } from "./lib/playLink";
 import { qualityBadge } from "./lib/provenance";
+import { teamShapeSeries } from "./lib/teamShape";
 import type { TrackingPlay } from "./lib/types";
 
 const INITIAL_PLAY_URLS = ["/plays/local-sample.json", "/plays/demo.json"] as const;
@@ -56,6 +58,7 @@ export default function App() {
   const [showLabels, setShowLabels] = useState(true);
   const [showTrails, setShowTrails] = useState(true);
   const [showOrientation, setShowOrientation] = useState(false);
+  const [showTeamShape, setShowTeamShape] = useState(true);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -148,6 +151,9 @@ export default function App() {
     }
   }, []);
 
+  const shapeSeries = useMemo(() => play ? teamShapeSeries(play) : [], [play]);
+  const shapeSnapshot = shapeSeries[frameIndex] ?? null;
+
   if (!play) {
     return <main className="loading-state">{loadError ?? "Loading motion lab…"}</main>;
   }
@@ -216,6 +222,7 @@ export default function App() {
                 <Toggle label="Labels" checked={showLabels} onChange={setShowLabels} />
                 <Toggle label="Trails" checked={showTrails} onChange={setShowTrails} />
                 <Toggle label="Facing" checked={showOrientation} onChange={setShowOrientation} />
+                <Toggle label="Shape" checked={showTeamShape} onChange={setShowTeamShape} />
               </div>
             </div>
             <FieldReplay
@@ -224,6 +231,8 @@ export default function App() {
               showLabels={showLabels}
               showTrails={showTrails}
               showOrientation={showOrientation}
+              showTeamShape={showTeamShape}
+              teamShape={shapeSnapshot}
               onSelectEntity={setSelectedEntityId}
               selectedEntityId={selectedEntityId}
             />
@@ -245,6 +254,7 @@ export default function App() {
               selectedEntityId={selectedEntityId}
               onFrameChange={changeFrame}
             />
+            <TeamShapePanel play={play} snapshot={shapeSnapshot} />
           </div>
           <PlaySidebar play={play} frameIndex={frameIndex} selectedEntityId={selectedEntityId} />
         </section>

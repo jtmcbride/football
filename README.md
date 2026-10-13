@@ -15,7 +15,10 @@ renders a fast custom-SVG replay with player inspection and spatial summaries.
 - Animated all-22 + football field replay
 - Frame scrubbing, event jumps, and 0.5× / 1× / 2× playback
 - Player labels, recent movement trails, and facing-direction overlays
-- Per-frame speed, acceleration, location, matchup separation, and formation width
+- Linked selected-player speed and nearest-opponent separation charts
+- Snap-relative route depth, lateral movement, displacement, and event markers
+- Team centroids, RMS spatial spread, quarterback depth, and protection-envelope overlays
+- Explicit unavailable states for source fields such as 2017 acceleration and orientation
 - Big Data Bowl CSV → compact play JSON extraction
 - Correct 180° normalization of leftward plays, including `x`, `y`, `dir`, and `o`
 - A clearly labeled schematic demo for immediate use
@@ -198,6 +201,6 @@ integration surface.
 ## Next useful slices
 
 1. Profile cataloging against an accepted full release and add resumable fingerprint checkpoints.
-2. Derive route geometry, defender leverage, pocket shape, and separation-over-time curves.
+2. Compare plays and aggregate repeated route and team-shape patterns without implying league-wide coverage.
 3. Ingest nflverse participation data for formation and personnel in seasons that lack them.
 4. Train only after establishing season/game splits that prevent play-family and team leakage.

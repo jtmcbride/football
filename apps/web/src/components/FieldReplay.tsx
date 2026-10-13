@@ -1,4 +1,5 @@
 import { memo, useMemo } from "react";
+import type { TeamShapeSnapshot } from "../lib/teamShape";
 import type { TrackingFrame, TrackingPlay } from "../lib/types";
 
 const VIEW_WIDTH = 1200;
@@ -11,6 +12,8 @@ interface FieldReplayProps {
   showLabels: boolean;
   showTrails: boolean;
   showOrientation: boolean;
+  showTeamShape: boolean;
+  teamShape: TeamShapeSnapshot | null;
   onSelectEntity: (id: string | null) => void;
   selectedEntityId: string | null;
 }
@@ -21,6 +24,8 @@ export const FieldReplay = memo(function FieldReplay({
   showLabels,
   showTrails,
   showOrientation,
+  showTeamShape,
+  teamShape,
   onSelectEntity,
   selectedEntityId,
 }: FieldReplayProps) {
@@ -83,6 +88,8 @@ export const FieldReplay = memo(function FieldReplay({
             <text x={play.play.absoluteYardline * SCALE + 8} y="22">LOS</text>
           </g>
         ) : null}
+
+        {showTeamShape && teamShape ? <TeamShapeOverlay snapshot={teamShape} /> : null}
 
         {showTrails ? trails.map((trail) => (
           <polyline key={trail.id} points={trail.points} className={`trail ${teamClass(trail.club, play)}`} />
@@ -152,6 +159,43 @@ export const FieldReplay = memo(function FieldReplay({
     </div>
   );
 });
+
+function TeamShapeOverlay({ snapshot }: { snapshot: TeamShapeSnapshot }) {
+  return (
+    <g className="team-shape-overlay" aria-hidden="true">
+      {snapshot.protection ? (
+        <polygon
+          className="protection-envelope"
+          points={snapshot.protection.points.map((point) => `${(point.x * SCALE).toFixed(1)},${(point.y * SCALE).toFixed(1)}`).join(" ")}
+        />
+      ) : null}
+      {snapshot.offense ? <CentroidMark shape={snapshot.offense} team="offense" label="O μ" /> : null}
+      {snapshot.defense ? <CentroidMark shape={snapshot.defense} team="defense" label="D μ" /> : null}
+    </g>
+  );
+}
+
+function CentroidMark({
+  shape,
+  team,
+  label,
+}: {
+  shape: NonNullable<TeamShapeSnapshot["offense"]>;
+  team: "offense" | "defense";
+  label: string;
+}) {
+  const x = shape.centroid.x * SCALE;
+  const y = shape.centroid.y * SCALE;
+  return (
+    <g className={`centroid-mark ${team}`}>
+      <circle className="team-spread" cx={x} cy={y} r={shape.spread * SCALE} />
+      <line x1={x - 10} x2={x + 10} y1={y} y2={y} />
+      <line x1={x} x2={x} y1={y - 10} y2={y + 10} />
+      <circle className="centroid-core" cx={x} cy={y} r="4" />
+      <text x={x + 12} y={y - 10}>{label}</text>
+    </g>
+  );
+}
 
 function teamClass(club: string, play: TrackingPlay): string {
   if (club === play.play.offense) return "offense";
