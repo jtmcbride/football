@@ -161,6 +161,18 @@ class PlayQualityTest(unittest.TestCase):
         self.assertEqual(checks(play)["cadence"]["status"], "warning")
         self.assertIn("timestamp steps deviate", checks(play)["cadence"]["detail"])
 
+    def test_entity_major_rows_and_second_precision_timestamps_are_valid(self) -> None:
+        rows = play_rows()
+        for row in rows:
+            row["time"] = row["time"].split(".")[0] + "Z"
+        rows.sort(key=lambda row: (row["displayName"], int(row["frameId"])))
+
+        play = build(rows)
+
+        self.assertEqual(checks(play)["frame-order"]["status"], "pass")
+        self.assertEqual(checks(play)["cadence"]["status"], "pass")
+        self.assertIn("source timestamps have 1 s precision", checks(play)["cadence"]["detail"])
+
     def test_coordinates_are_graded_by_how_far_they_leave_the_field(self) -> None:
         def with_x(value: str) -> dict:
             rows = play_rows()
@@ -171,7 +183,11 @@ class PlayQualityTest(unittest.TestCase):
         self.assertEqual(checks(inside_margin)["coordinates"]["status"], "info")
         self.assertEqual(status_of(inside_margin), "valid")
 
-        well_outside = with_x("124.0")
+        tracked_off_field = with_x("136.1")
+        self.assertEqual(checks(tracked_off_field)["coordinates"]["status"], "info")
+        self.assertEqual(status_of(tracked_off_field), "valid")
+
+        well_outside = with_x("145.0")
         self.assertEqual(checks(well_outside)["coordinates"]["status"], "warning")
         self.assertEqual(status_of(well_outside), "incomplete")
 
@@ -189,6 +205,16 @@ class PlayQualityTest(unittest.TestCase):
         self.assertIn("1 duplicate player rows", checks(play)["rows"]["detail"])
         self.assertIn("1 rows with missing or non-numeric values were skipped", checks(play)["rows"]["detail"])
         self.assertEqual(status_of(play), "invalid")
+
+    def test_sparse_unparseable_rows_make_a_play_incomplete(self) -> None:
+        rows = play_rows()
+        rows[0]["x"] = "NA"
+
+        play = build(rows)
+
+        self.assertEqual(checks(play)["rows"]["status"], "warning")
+        self.assertEqual(checks(play)["rows"]["count"], 1)
+        self.assertEqual(status_of(play), "incomplete")
 
     def test_out_of_order_frames_are_sorted_and_reported(self) -> None:
         rows = play_rows()
@@ -240,6 +266,9 @@ class PlayQualityTest(unittest.TestCase):
         no_events = build(play_rows(events={}))
         self.assertEqual(checks(no_events)["events"]["status"], "info")
         self.assertEqual(status_of(no_events), "valid")
+
+        legacy_motion = build(play_rows(events={5: "ball_snap", 7: "man_in_motion", 15: "handoff"}))
+        self.assertEqual(checks(legacy_motion)["events"]["status"], "pass")
 
     def test_unknown_direction_is_not_silently_treated_as_normalized(self) -> None:
         headers = [name for name in HEADERS if name != "playDirection"]

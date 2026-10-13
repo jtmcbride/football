@@ -35,10 +35,12 @@ TRACKING_HZ = 10
 FRAME_MS = 1000 // TRACKING_HZ
 EXPECTED_PLAYERS = 22
 
-#: Players legitimately step a little outside the lines; beyond these margins the data is suspect.
+#: Tracking continues beyond the field after boundary plays. The official 2017 sample records
+#: plausible player and ball movement as far as 16.1 yd outside the field; larger excursions are
+#: suspect, and extreme values are corrupt.
 COORDINATE_NOTE_YARDS = 0.0
-COORDINATE_WARN_YARDS = 2.0
-COORDINATE_ERROR_YARDS = 10.0
+COORDINATE_WARN_YARDS = 20.0
+COORDINATE_ERROR_YARDS = 50.0
 
 #: Timestamp spacing may jitter slightly around 100 ms.
 CADENCE_TOLERANCE_MS = 25.0
@@ -82,7 +84,7 @@ SOURCE_FIELDS = {
     "playDirection": "playDirection",
 }
 
-_PRE_SNAP_EVENTS = {"huddle_break_offense", "line_set", "man_in_motion", "shift", "motion_shift"}
+_PRE_SNAP_EVENTS = {"huddle_break_offense", "line_set", "shift", "motion_shift"}
 _POST_SNAP_EVENTS = {
     "play_action", "handoff", "run", "pass_forward", "autoevent_passforward", "pass_arrived",
     "pass_outcome_caught", "pass_outcome_incomplete", "pass_outcome_interception",
@@ -104,6 +106,7 @@ class SourceObservations:
     frame_regressions: int = 0
     conflicting_event_frames: int = 0
     frame_times_ms: dict[int, float] = field(default_factory=dict)
+    timestamp_precision_ms: float | None = None
     field_values: Counter[str] = field(default_factory=Counter)
     headers: frozenset[str] = frozenset()
     rotated: bool = False
@@ -184,7 +187,7 @@ def _rows(obs: SourceObservations | None) -> dict[str, Any]:
     if obs.duplicate_rows:
         parts.append((ERROR, f"{obs.duplicate_rows} duplicate player rows within a frame", obs.duplicate_rows))
     if obs.rows_unparseable:
-        parts.append((ERROR, f"{obs.rows_unparseable} rows with missing or non-numeric values were skipped", obs.rows_unparseable))
+        parts.append((WARNING, f"{obs.rows_unparseable} rows with missing or non-numeric values were skipped", obs.rows_unparseable))
     if obs.rows_without_frame:
         parts.append((WARNING, f"{obs.rows_without_frame} rows without a frame id were skipped", obs.rows_without_frame))
     if not parts:
@@ -247,7 +250,8 @@ def _cadence(frames: list[dict[str, Any]], obs: SourceObservations | None) -> di
     times = obs.frame_times_ms if obs else {}
     irregular = 0
     timed = 0
-    if len(times) == len(ids):
+    timestamps_are_precise = obs is None or obs.timestamp_precision_ms is None or obs.timestamp_precision_ms <= FRAME_MS
+    if len(times) == len(ids) and timestamps_are_precise:
         for a, b in zip(ids, ids[1:]):
             if b - a == 1:
                 timed += 1
@@ -265,7 +269,13 @@ def _cadence(frames: list[dict[str, Any]], obs: SourceObservations | None) -> di
         problems.append(f"{irregular} of {timed} timestamp steps deviate from {FRAME_MS} ms")
     if problems:
         return _check("cadence", label, WARNING, "; ".join(problems), missing + irregular)
-    basis = "frame ids and timestamps" if timed else "frame ids only (no usable timestamps)"
+    if timed:
+        basis = "frame ids and timestamps"
+    elif obs and obs.timestamp_precision_ms and obs.timestamp_precision_ms > FRAME_MS:
+        seconds = obs.timestamp_precision_ms / 1000.0
+        basis = f"frame ids only (source timestamps have {seconds:g} s precision)"
+    else:
+        basis = "frame ids only (no usable timestamps)"
     return _check("cadence", label, PASS, f"{len(ids)} consecutive frames at {FRAME_MS} ms, from {basis}")
 
 

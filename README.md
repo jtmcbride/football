@@ -79,6 +79,15 @@ web app shows it beside the replay. Fields a source never provides, such as
 acceleration in the legacy 2017 sample, are disclosed but do not make a play
 incomplete.
 
+The thresholds have been checked against the NFL's official 2017 single-game
+sample. Of 177 plays, 169 are valid, eight are incomplete, and none are invalid.
+The eight warnings are attributable to brief source-coordinate dropouts, one
+21-player play, one direction that cannot be inferred at midfield, and one event
+alignment inconsistency. This validation does not establish league-wide behavior:
+the sample contains one game, omits acceleration and orientation, and cannot
+independently cross-check the yard line because legacy direction is inferred from
+the ball and line of scrimmage.
+
 ### Add nflverse play-by-play context
 
 Download `play_by_play_<season>.parquet` for the seasons in your catalog from the
@@ -189,7 +198,6 @@ integration surface.
 ## Next useful slices
 
 1. Profile cataloging against an accepted full release and add resumable fingerprint checkpoints.
-2. Add per-play provenance and tracking-quality badges (Milestone 2).
-3. Derive route geometry, defender leverage, pocket shape, and separation-over-time curves.
-4. Ingest nflverse participation data for formation and personnel in seasons that lack them.
-6. Train only after establishing season/game splits that prevent play-family and team leakage.
+2. Derive route geometry, defender leverage, pocket shape, and separation-over-time curves.
+3. Ingest nflverse participation data for formation and personnel in seasons that lack them.
+4. Train only after establishing season/game splits that prevent play-family and team leakage.

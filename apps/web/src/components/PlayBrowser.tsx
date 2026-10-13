@@ -370,6 +370,7 @@ function playKey(summary: PlaySummary): string {
 
 function formatDown(down: number | null, yards: number | null): string {
   if (down === null) return "Down —";
+  if (down === 0) return "Special teams";
   const suffix = down === 1 ? "st" : down === 2 ? "nd" : down === 3 ? "rd" : "th";
   return `${down}${suffix} & ${yards ?? "goal"}`;
 }
