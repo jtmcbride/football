@@ -57,7 +57,7 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
             <p>{entity.club} · {entity.position ?? "Position unavailable"}</p>
           </div>
           <dl className="selected-stats">
-            <div><dt>Speed</dt><dd>{trackedEntity ? trackedEntity.speed.toFixed(1) : "Unavailable"} {trackedEntity ? <small>yd/s</small> : null}</dd></div>
+            <div><dt>Speed</dt><dd>{trackedEntity?.speed === null || !trackedEntity ? "Unavailable" : trackedEntity.speed.toFixed(1)} {trackedEntity?.speed === null || !trackedEntity ? null : <small>yd/s</small>}</dd></div>
             <div><dt>Accel.</dt><dd>{trackedEntity?.acceleration === null || !trackedEntity ? "Unavailable" : trackedEntity.acceleration.toFixed(1)} {trackedEntity?.acceleration === null || !trackedEntity ? null : <small>yd/s²</small>}</dd></div>
             <div><dt>Field x</dt><dd>{trackedEntity ? trackedEntity.x.toFixed(1) : "Unavailable"} {trackedEntity ? <small>yd</small> : null}</dd></div>
             <div><dt>Field y</dt><dd>{trackedEntity ? trackedEntity.y.toFixed(1) : "Unavailable"} {trackedEntity ? <small>yd</small> : null}</dd></div>

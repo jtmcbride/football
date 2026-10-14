@@ -125,7 +125,7 @@ export const FieldReplay = memo(function FieldReplay({
               }}
               role="button"
               tabIndex={0}
-              aria-label={`${entity.name}, ${entity.speed.toFixed(1)} yards per second`}
+              aria-label={entity.speed === null ? `${entity.name}, speed not tracked` : `${entity.name}, ${entity.speed.toFixed(1)} yards per second`}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") onSelectEntity(entity.id);
               }}

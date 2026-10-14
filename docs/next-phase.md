@@ -26,8 +26,18 @@ heading versus motion, source fields) and graded `valid`, `incomplete`, `invalid
 or `generated`. Ingest streams every tracking file once and stores the result in a
 `play_quality` table, so the ingest report, `football quality`, `GET /data-health`,
 the play search (`quality_status`), and the sidebar all report the same measured
-coverage; each served play carries a compact `provenance` block. Remaining work is
-full-release performance profiling, resumable fingerprint checkpoints, filters for
+coverage; each served play carries a compact `provenance` block. The full 2025 release is no
+longer downloadable, so the catalog was profiled on the 2026 analytics release instead. That release is
+a pass-window format: 14,108 tracked pass plays from 272 games in the 2023 season. Each play has
+pre-throw frames for the passer, route runners, and coverage defenders, then x/y for the players to
+predict while the ball is in the air. It has no football, linemen, or events, and a supplementary file
+provides context. A `pass_window` adapter catalogs it behind the same `TrackingCatalog` interface. Full
+ingest takes about 85 s with a 241 MB peak memory footprint, so resumable fingerprint checkpoints are
+not needed yet. 14,107 plays are valid; the one incomplete play tracks only the passer. Heading versus
+motion passes on 14,087 plays, the first large-scale confirmation that x, y, and `dir` rotate together,
+and acceleration and orientation are now present in real data. The release gate is still only
+partially met: no full 22-player release is available to verify the ball, yard-line, protection, and
+event checks at scale. Remaining work is filters for
 formation, personnel, and result (blocked on nflverse participation data for seasons
 that lack them), and persisting filters in the URL. The thresholds were validated
 against the NFL's official 2017 single-game sample: 169 of 177 plays are valid, eight
