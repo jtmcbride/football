@@ -4,14 +4,18 @@ import { PlayBrowser } from "./components/PlayBrowser";
 import { PlayerAnalysis } from "./components/PlayerAnalysis";
 import { PlaySidebar } from "./components/PlaySidebar";
 import { TeamShapePanel } from "./components/TeamShapePanel";
+import { RouteAtlas } from "./components/RouteAtlas";
 import { Timeline } from "./components/Timeline";
 import { fetchTrackingPlay } from "./lib/catalog";
 import { clampFrame, isLinkedTo, parsePlayLink, withPlayLink, withoutPlayLink } from "./lib/playLink";
 import { qualityBadge } from "./lib/provenance";
 import { teamShapeSeries } from "./lib/teamShape";
+import { observedRoute, routeKey } from "./lib/routes";
+import type { RoutePath } from "./lib/routes";
 import type { TrackingPlay } from "./lib/types";
 
 const INITIAL_PLAY_URLS = ["/plays/local-sample.json", "/plays/demo.json"] as const;
+const NO_ROUTES: RoutePath[] = [];
 
 interface LocationPlay {
   play: TrackingPlay;
@@ -59,8 +63,12 @@ export default function App() {
   const [showTrails, setShowTrails] = useState(true);
   const [showOrientation, setShowOrientation] = useState(false);
   const [showTeamShape, setShowTeamShape] = useState(true);
+  const [showRoutes, setShowRoutes] = useState(true);
+  const [showLanding, setShowLanding] = useState(true);
+  const [routeSelection, setRouteSelection] = useState<{ owner: TrackingPlay; routes: RoutePath[] } | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const locationSearch = useRef(window.location.search);
 
   // Restore the play named by the URL on first load and on browser back/forward.
   useEffect(() => {
@@ -84,11 +92,17 @@ export default function App() {
           setLoadError(error instanceof Error ? error.message : "Could not load an initial play.");
         });
     };
+    const restoreNavigation = () => {
+      // Hash links also emit popstate. They must not reload a play and clear its overlays.
+      if (window.location.search === locationSearch.current) return;
+      locationSearch.current = window.location.search;
+      restore();
+    };
     restore();
-    window.addEventListener("popstate", restore);
+    window.addEventListener("popstate", restoreNavigation);
     return () => {
       controller.abort();
-      window.removeEventListener("popstate", restore);
+      window.removeEventListener("popstate", restoreNavigation);
     };
   }, []);
 
@@ -125,12 +139,14 @@ export default function App() {
 
   // Scrubbing rewrites the current entry only, and only while the URL still names the displayed play.
   useEffect(() => {
-    if (!play || !isLinkedTo(window.location.search, play.play.gameId, play.play.playId)) return;
-    replaceSearch(withPlayLink(window.location.search, {
-      gameId: play.play.gameId,
-      playId: play.play.playId,
-      frameIndex,
-    }));
+    if (play && isLinkedTo(window.location.search, play.play.gameId, play.play.playId)) {
+      replaceSearch(withPlayLink(window.location.search, {
+        gameId: play.play.gameId,
+        playId: play.play.playId,
+        frameIndex,
+      }));
+    }
+    locationSearch.current = window.location.search;
   }, [frameIndex, play]);
 
   const loadFile = useCallback(async (file: File | undefined) => {
@@ -153,6 +169,11 @@ export default function App() {
 
   const shapeSeries = useMemo(() => play ? teamShapeSeries(play) : [], [play]);
   const shapeSnapshot = shapeSeries[frameIndex] ?? null;
+  const currentRoute = useMemo(() => play ? observedRoute(play) : null, [play]);
+  const routeOverlays = routeSelection?.owner === play ? routeSelection.routes : NO_ROUTES;
+  const selectRouteOverlays = useCallback((routes: RoutePath[]) => {
+    if (play) setRouteSelection({ owner: play, routes });
+  }, [play]);
 
   if (!play) {
     return <main className="loading-state">{loadError ?? "Loading motion lab…"}</main>;
@@ -173,6 +194,7 @@ export default function App() {
         <nav aria-label="Primary">
           <a href="#play-browser">Plays</a>
           <a className="active" href="#replay">Replay</a>
+          <a href="#route-atlas">Routes</a>
           <a href="#data-notes">Data notes</a>
         </nav>
         <button className="open-button" type="button" onClick={() => fileInput.current?.click()}>
@@ -190,11 +212,11 @@ export default function App() {
       <main id="top">
         <section className="intro">
           <div>
-            <p className="eyebrow">ALL-22 · FRAME-BY-FRAME</p>
+            <p className="eyebrow">PLAYER TRACKING · FRAME-BY-FRAME</p>
             <h1>See the play<br />before the result.</h1>
           </div>
           <div className="intro-copy">
-            <p>Inspect spacing, speed, orientation, and assignments from public tracking releases—one tenth of a second at a time.</p>
+            <p>Inspect spacing, speed, orientation, and route patterns from public tracking releases—one tenth of a second at a time.</p>
             <div className="legend">
               <span><i className="offense" /> {play.play.offense ?? "Offense"}</span>
               <span><i className="defense" /> {play.play.defense ?? "Defense"}</span>
@@ -223,6 +245,8 @@ export default function App() {
                 <Toggle label="Trails" checked={showTrails} onChange={setShowTrails} />
                 <Toggle label="Facing" checked={showOrientation} onChange={setShowOrientation} />
                 <Toggle label="Shape" checked={showTeamShape} onChange={setShowTeamShape} />
+                <Toggle label="Routes" checked={showRoutes} onChange={setShowRoutes} />
+                <Toggle label="Landing" checked={showLanding} onChange={setShowLanding} />
               </div>
             </div>
             <FieldReplay
@@ -233,6 +257,9 @@ export default function App() {
               showOrientation={showOrientation}
               showTeamShape={showTeamShape}
               teamShape={shapeSnapshot}
+              currentRoute={showRoutes ? currentRoute : null}
+              routeOverlays={showRoutes ? routeOverlays : NO_ROUTES}
+              showLanding={showLanding}
               onSelectEntity={setSelectedEntityId}
               selectedEntityId={selectedEntityId}
             />
@@ -259,6 +286,9 @@ export default function App() {
           <PlaySidebar play={play} frameIndex={frameIndex} selectedEntityId={selectedEntityId} />
         </section>
 
+        <RouteAtlas key={routeKey(play.play)} current={currentRoute} overlays={routeOverlays}
+          onOverlaysChange={selectRouteOverlays} onSelectPlay={selectCatalogPlay} />
+
         <section className="data-notes" id="data-notes">
           <div>
             <p className="eyebrow">DATA BOUNDARY</p>
@@ -266,6 +296,8 @@ export default function App() {
           </div>
           {play.source.kind === "generated-demo" ? (
             <p>Run <code>make sample</code> after downloading the official sample to load a real tracked play. Larger Big Data Bowl releases require acceptance of their competition rules.</p>
+          ) : play.source.trackingFormat === "pass-window" ? (
+            <p>Selected passing-play participants from the 2026 release. Speed, acceleration, and orientation are available before the throw; only positions are supplied in flight. Snap time, the football trajectory, and linemen are unavailable. Route and coverage labels come from the supplementary data.</p>
           ) : (
             <p>
               Source: {play.source.trackingFile}. {play.source.missingFields?.length ? `Unavailable in this release: ${play.source.missingFields.join(", ")}.` : "All core motion fields are available."}

@@ -9,10 +9,14 @@ export interface TrackedEntity {
   jersey: number | null;
   x: number;
   y: number;
-  speed: number;
+  /** Null when the source does not track speed for this frame (pass-window players after the throw). */
+  speed: number | null;
   acceleration: number | null;
   orientation: number | null;
   direction: number | null;
+  /** Source role; the play's route label applies only to the Targeted Receiver. */
+  role?: string | null;
+  playerToPredict?: boolean | null;
 }
 
 export interface TrackingFrame {
@@ -99,7 +103,7 @@ export interface TrackingPlay {
     name: string;
     kind: "generated-demo" | "public-competition-data" | string;
     trackingFile: string | null;
-    trackingFormat?: "weekly" | "legacy-game" | string;
+    trackingFormat?: "weekly" | "legacy-game" | "pass-window" | string;
     directionMethod?: "source" | "inferred-line-of-scrimmage" | "unavailable" | string;
     missingFields?: string[];
   };
@@ -122,6 +126,18 @@ export interface TrackingPlay {
     absoluteYardline: number | null;
     originalDirection: "left" | "right" | string;
     normalizedDirection: "right" | "unknown";
+    /** Where a pass-window release records the pass landing, normalized like the frames. */
+    ballLanding?: { x: number; y: number } | null;
+    passWindow?: {
+      route: string | null;
+      coverage: string | null;
+      coverageType: string | null;
+      formation: string | null;
+      targetReceiverId: string | null;
+      releaseFrameId: number;
+      arrivalFrameId: number | null;
+      eventSource: "derived-window-boundaries";
+    };
   };
   frames: TrackingFrame[];
   enrichment?: { nflverse?: NflverseEnrichment };

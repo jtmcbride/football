@@ -11,12 +11,12 @@ from typing import Any, Iterable
 
 import duckdb
 
-from . import nflverse, quality
+from . import nflverse, pass_window, quality, routes
 from .nflverse import EnrichmentReport, JoinCount, JoinCoverage, PbpFile, SeasonCoverage, WeekCoverage
 from .quality import QualityReport
 from .tracking import extract_play, read_lookup, scan_tracking_file
 
-CATALOG_SCHEMA_VERSION = 4
+CATALOG_SCHEMA_VERSION = 6
 TRACKING_FILE_PATTERN = re.compile(r"tracking_week_(\d+)\.csv$")
 LEGACY_TRACKING_FILE_PATTERN = re.compile(r"tracking_gameId_(\d+)\.csv$")
 
@@ -197,66 +197,20 @@ class TrackingCatalog:
                     quality=health.quality,
                 )
 
-            try:
-                all_games = tuple(self._game_rows(discovered["games"]))
-                tracked_game_ids = {item.game_id for item in source_files if item.game_id is not None}
-                tracked_weeks = {item.week for item in source_files if item.role == "tracking" and item.week is not None}
-                games = tuple(
-                    row
-                    for row in all_games
-                    if row[0] in tracked_game_ids or row[2] in tracked_weeks
+            if discovered["source_format"] == pass_window.TRACKING_FORMAT:
+                games, plays, players, tracking_files, assessments, route_rows = self._pass_window_rows(
+                    discovered["release"], source_files, warnings
                 )
-                teams_by_game = {row[0]: (row[4], row[5]) for row in games}
-                plays = tuple(
-                    row for row in self._play_rows(discovered["plays"], teams_by_game) if row[0] in teams_by_game
+            else:
+                route_rows = ()
+                games, plays, players, tracking_files, assessments = self._csv_release_rows(
+                    discovered, source_files, warnings
                 )
-                players = tuple(self._player_rows(discovered["players"]))
-            except (KeyError, TypeError, ValueError) as error:
-                raise CatalogValidationError([f"Could not parse release metadata: {error}"]) from error
-            empty_sources = [
-                name
-                for name, rows in (("games.csv", games), ("plays.csv", plays), ("players.csv", players))
-                if not rows
-            ]
-            if empty_sources:
-                raise CatalogValidationError(
-                    [f"Source files contain no data rows: {', '.join(empty_sources)}"]
-                )
-            tracking_files = tuple(item for item in source_files if item.role == "tracking")
-
-            omitted_games = len(all_games) - len(games)
-            if omitted_games:
-                warnings.append(
-                    f"{omitted_games} games without a matching tracking file were omitted from the catalog"
-                )
-
-            known_game_ids = {row[0] for row in games}
-            unmatched_plays = sum(1 for row in plays if row[0] not in known_game_ids)
-            if unmatched_plays:
-                warnings.append(f"{unmatched_plays} plays reference a game absent from games.csv")
-
-            catalog_weeks = {row[2] for row in games if row[2] is not None}
-            tracking_weeks = {item.week for item in tracking_files}
-            missing_weeks = sorted(catalog_weeks - tracking_weeks) if discovered["source_format"] == "weekly" else []
-            if missing_weeks:
-                warnings.append(
-                    "No tracking CSV was found for catalog weeks: "
-                    + ", ".join(str(week) for week in missing_weeks)
-                )
-            if discovered.get("player_play") is None:
-                warnings.append("player_play.csv is unavailable; player-play attributes were not cataloged")
-            if discovered["source_format"] == "legacy-game":
-                warnings.append(
-                    "Legacy game-level tracking omits acceleration, body orientation, and source play direction; "
-                    "direction is inferred from the line of scrimmage when possible"
-                )
-
-            assessments = self._assess_release(discovered, games, plays, tracking_files)
 
             connection.execute("BEGIN TRANSACTION")
             try:
                 for table in (
-                    "catalog_metadata", "source_files", "tracking_files", "games", "plays", "players", "play_quality"
+                    "catalog_metadata", "source_files", "tracking_files", "games", "plays", "players", "play_quality", "routes"
                 ):
                     connection.execute(f"DELETE FROM {table}")
 
@@ -284,15 +238,15 @@ class TrackingCatalog:
                     [(str(item.path), item.week, item.game_id) for item in tracking_files],
                 )
                 connection.executemany("INSERT INTO play_quality VALUES (?, ?, ?, ?, ?, ?)", assessments)
+                if route_rows:
+                    connection.executemany("INSERT INTO routes VALUES (?, ?, ?, ?, ?, ?, ?)", route_rows)
 
                 metadata = {
                     "schema_version": str(CATALOG_SCHEMA_VERSION),
                     "source_root": str(source_root),
                     "fingerprint": fingerprint,
                     "ingested_at": ingested_at,
-                    "games_path": str(discovered["games"]),
-                    "plays_path": str(discovered["plays"]),
-                    "players_path": str(discovered["players"]),
+                    **self._context_paths(discovered),
                     "source_format": discovered["source_format"],
                     "warnings": json.dumps(warnings),
                     "quality_version": str(quality.QUALITY_VERSION),
@@ -397,6 +351,69 @@ class TrackingCatalog:
             total=total,
         )
 
+    def find_routes(
+        self, *, route: str | None = None, coverage: str | None = None, coverage_type: str | None = None,
+        reference: tuple[str, str] | None = None, page: int = 1, page_size: int = 8,
+    ) -> dict[str, Any]:
+        """Browse indexed target paths or rank by RMS Euclidean distance in yards."""
+        if page < 1 or not 1 <= page_size <= 50:
+            raise ValueError("Route page must be positive and page_size between 1 and 50")
+        connection = self._connect_existing()
+        try:
+            self._require_ready(connection)
+            metadata = self._metadata(connection)
+            supported = metadata.get("source_format") == pass_window.TRACKING_FORMAT
+            base = {
+                "supported": supported, "items": [], "reference": None, "total": 0,
+                "page": page, "pageSize": page_size, "indexed": 0,
+                "catalogPlays": connection.execute("SELECT COUNT(*) FROM plays").fetchone()[0],
+                "routeOptions": [], "coverageOptions": [], "coverageTypeOptions": [],
+            }
+            if not supported:
+                return base
+            if int(metadata.get("schema_version", 0)) < 6:
+                raise CatalogNotFoundError("Route index unavailable. Re-run tracking ingest to build the route atlas.")
+            source = (
+                "FROM routes r JOIN play_quality q USING (game_id, play_id) "
+                "WHERE q.status != 'invalid'"
+            )
+            base["indexed"] = connection.execute(f"SELECT COUNT(*) {source}").fetchone()[0]
+            for key, column in (("routeOptions", "route"), ("coverageOptions", "coverage"),
+                                ("coverageTypeOptions", "coverage_type")):
+                base[key] = [row[0] for row in connection.execute(
+                    f"SELECT DISTINCT r.{column} {source} AND r.{column} IS NOT NULL ORDER BY 1"
+                ).fetchall()]
+            parameters: list[Any] = []
+            for column, value in (("route", route), ("coverage", coverage), ("coverage_type", coverage_type)):
+                if value:
+                    source += f" AND r.{column} = ?"
+                    parameters.append(value)
+            vector = None
+            if reference:
+                row = connection.execute(
+                    "SELECT r.route_json, r.signature FROM routes r JOIN play_quality q USING (game_id, play_id) "
+                    "WHERE r.game_id = ? AND r.play_id = ? AND q.status != 'invalid'", list(reference),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("This play has no comparable route. A unique targeted receiver, known direction, "
+                                     "and uninterrupted pre-throw tracking are required.")
+                base["reference"], vector = json.loads(row[0]), row[1]
+                source += " AND NOT (r.game_id = ? AND r.play_id = ?)"
+                parameters.extend(reference)
+            base["total"] = connection.execute(f"SELECT COUNT(*) {source}", parameters).fetchone()[0]
+            distance = "list_distance(r.signature, ?::DOUBLE[]) / sqrt(?)" if vector is not None else "NULL"
+            distance_parameters = [vector, routes.SAMPLE_COUNT] if vector is not None else []
+            rows = connection.execute(
+                f"SELECT r.route_json, {distance} AS distance {source} "
+                "ORDER BY distance NULLS LAST, r.game_id, TRY_CAST(r.play_id AS BIGINT), r.play_id LIMIT ? OFFSET ?",
+                [*distance_parameters, *parameters, page_size, (page - 1) * page_size],
+            ).fetchall()
+            base["items"] = [{**json.loads(row[0]), "distanceYards": round(row[1], 3) if row[1] is not None else None}
+                             for row in rows]
+            return base
+        finally:
+            connection.close()
+
     def load_play(self, game_id: str | int, play_id: str | int) -> dict[str, Any]:
         game_key, play_key = str(game_id), str(play_id)
         connection = self._connect_existing()
@@ -420,20 +437,31 @@ class TrackingCatalog:
             if tracking_path is None:
                 raise CatalogNotFoundError(f"No tracking CSV is cataloged for week {week}")
             metadata = self._metadata(connection)
+            output_row = connection.execute(
+                "SELECT path FROM source_files WHERE role = 'tracking-output' AND week = ?", [week]
+            ).fetchone()
             enrichment = nflverse.play_enrichment(
                 connection, game_key, play_key, self._nflverse_fingerprint(connection)
             )
         finally:
             connection.close()
 
-        play = extract_play(
-            tracking_path,
-            game_key,
-            play_key,
-            plays_path=metadata["plays_path"],
-            players_path=metadata["players_path"],
-            games_path=metadata["games_path"],
-        )
+        if metadata.get("source_format") == pass_window.TRACKING_FORMAT:
+            week_files = pass_window.WeekFiles(
+                season, week, Path(tracking_path), Path(output_row[0]) if output_row else None
+            )
+            play = pass_window.load_play(week_files, Path(metadata["supplementary_path"]), game_key, play_key)
+            context_files: list[str] = []
+        else:
+            play = extract_play(
+                tracking_path,
+                game_key,
+                play_key,
+                plays_path=metadata["plays_path"],
+                players_path=metadata["players_path"],
+                games_path=metadata["games_path"],
+            )
+            context_files = [Path(metadata[key]).name for key in ("games_path", "plays_path", "players_path")]
         play["source"]["releaseFingerprint"] = metadata["fingerprint"]
         play["source"]["catalogSchemaVersion"] = CATALOG_SCHEMA_VERSION
         play["enrichment"] = {"nflverse": enrichment}
@@ -446,9 +474,7 @@ class TrackingCatalog:
             "fingerprint": metadata["fingerprint"],
             "ingestedAt": metadata["ingested_at"],
         }
-        provenance["files"] = [
-            Path(metadata[key]).name for key in ("games_path", "plays_path", "players_path")
-        ] + provenance["files"]
+        provenance["files"] = context_files + provenance["files"]
         provenance["nflverse"] = {"status": enrichment["status"], "fingerprint": enrichment["fingerprint"]}
         return play
 
@@ -591,6 +617,88 @@ class TrackingCatalog:
         finally:
             connection.close()
 
+    def _csv_release_rows(
+        self, discovered: dict[str, Any], source_files: tuple[_SourceFile, ...], warnings: list[str]
+    ) -> tuple[tuple[Any, ...], ...]:
+        """Catalog rows and quality assessments for a release of games/plays/players CSVs."""
+        try:
+            all_games = tuple(self._game_rows(discovered["games"]))
+            tracked_game_ids = {item.game_id for item in source_files if item.game_id is not None}
+            tracked_weeks = {item.week for item in source_files if item.role == "tracking" and item.week is not None}
+            games = tuple(
+                row
+                for row in all_games
+                if row[0] in tracked_game_ids or row[2] in tracked_weeks
+            )
+            teams_by_game = {row[0]: (row[4], row[5]) for row in games}
+            plays = tuple(
+                row for row in self._play_rows(discovered["plays"], teams_by_game) if row[0] in teams_by_game
+            )
+            players = tuple(self._player_rows(discovered["players"]))
+        except (KeyError, TypeError, ValueError) as error:
+            raise CatalogValidationError([f"Could not parse release metadata: {error}"]) from error
+        empty_sources = [
+            name
+            for name, rows in (("games.csv", games), ("plays.csv", plays), ("players.csv", players))
+            if not rows
+        ]
+        if empty_sources:
+            raise CatalogValidationError(
+                [f"Source files contain no data rows: {', '.join(empty_sources)}"]
+            )
+        tracking_files = tuple(item for item in source_files if item.role == "tracking")
+
+        omitted_games = len(all_games) - len(games)
+        if omitted_games:
+            warnings.append(
+                f"{omitted_games} games without a matching tracking file were omitted from the catalog"
+            )
+
+        known_game_ids = {row[0] for row in games}
+        unmatched_plays = sum(1 for row in plays if row[0] not in known_game_ids)
+        if unmatched_plays:
+            warnings.append(f"{unmatched_plays} plays reference a game absent from games.csv")
+
+        catalog_weeks = {row[2] for row in games if row[2] is not None}
+        tracking_weeks = {item.week for item in tracking_files}
+        missing_weeks = sorted(catalog_weeks - tracking_weeks) if discovered["source_format"] == "weekly" else []
+        if missing_weeks:
+            warnings.append(
+                "No tracking CSV was found for catalog weeks: "
+                + ", ".join(str(week) for week in missing_weeks)
+            )
+        if discovered.get("player_play") is None:
+            warnings.append("player_play.csv is unavailable; player-play attributes were not cataloged")
+        if discovered["source_format"] == "legacy-game":
+            warnings.append(
+                "Legacy game-level tracking omits acceleration, body orientation, and source play direction; "
+                "direction is inferred from the line of scrimmage when possible"
+            )
+
+        assessments = self._assess_release(discovered, games, plays, tracking_files)
+        return games, plays, players, tracking_files, tuple(assessments)
+
+    def _pass_window_rows(
+        self, release: pass_window.Release, source_files: tuple[_SourceFile, ...], warnings: list[str]
+    ) -> tuple[tuple[Any, ...], ...]:
+        """Catalog rows and quality assessments for a pass-window release."""
+        try:
+            rows = pass_window.catalog_rows(release)
+        except (OSError, UnicodeDecodeError, csv.Error, KeyError, ValueError) as error:
+            raise CatalogValidationError([f"Could not read pass-window release: {error}"]) from error
+        if not rows.plays:
+            raise CatalogValidationError(["No tracked play in the input files appears in supplementary_data.csv"])
+        warnings.extend(rows.warnings)
+        tracking_files = tuple(item for item in source_files if item.role == "tracking")
+        return (
+            tuple(rows.games),
+            tuple(rows.plays),
+            tuple(rows.players),
+            tracking_files,
+            tuple(self._quality_rows(rows.plays, rows.validations)),
+            tuple(rows.routes),
+        )
+
     @staticmethod
     def _assess_release(
         discovered: dict[str, Any],
@@ -628,6 +736,12 @@ class TrackingCatalog:
                     key, quality.failed_validation(f"No tracking rows for this play in {item.path.name}")
                 )
 
+        return TrackingCatalog._quality_rows(plays, validations)
+
+    @staticmethod
+    def _quality_rows(
+        plays: Iterable[tuple[Any, ...]], validations: dict[tuple[str, str], dict[str, Any]]
+    ) -> list[tuple[Any, ...]]:
         return [
             (
                 row[0],
@@ -659,6 +773,11 @@ class TrackingCatalog:
     def _discover_release(self, source_root: Path) -> dict[str, Any]:
         if not source_root.is_dir():
             raise CatalogValidationError([f"Source directory does not exist: {source_root}"])
+        if pass_window.is_release(source_root):
+            release, errors = pass_window.discover(source_root)
+            if errors:
+                raise CatalogValidationError(errors)
+            return {"source_format": pass_window.TRACKING_FORMAT, "release": release}
 
         discovered: dict[str, Any] = {
             "games": source_root / "games.csv",
@@ -720,6 +839,13 @@ class TrackingCatalog:
         return discovered
 
     @staticmethod
+    def _context_paths(discovered: dict[str, Any]) -> dict[str, str]:
+        """Metadata keys naming the files that hold game and play context."""
+        if discovered["source_format"] == pass_window.TRACKING_FORMAT:
+            return {"supplementary_path": str(discovered["release"].supplementary)}
+        return {f"{role}_path": str(discovered[role]) for role in ("games", "plays", "players")}
+
+    @staticmethod
     def _header_errors(path: Path, required: set[str]) -> list[str]:
         headers = TrackingCatalog._headers(path)
         missing = sorted(required - headers)
@@ -731,7 +857,15 @@ class TrackingCatalog:
             return set(next(csv.reader(handle), []))
 
     def _fingerprint(self, discovered: dict[str, Any]) -> tuple[tuple[_SourceFile, ...], str]:
-        paths: list[tuple[Path, str, int | None, str | None]] = [
+        if discovered["source_format"] == pass_window.TRACKING_FORMAT:
+            release: pass_window.Release = discovered["release"]
+            paths: list[tuple[Path, str, int | None, str | None]] = [(release.supplementary, "supplementary", None, None)]
+            for week in release.weeks:
+                paths.append((week.input, "tracking", week.week, None))
+                if week.output is not None:
+                    paths.append((week.output, "tracking-output", week.week, None))
+            return self._hash_files(paths)
+        paths = [
             (discovered["games"], "games", None, None),
             (discovered["plays"], "plays", None, None),
             (discovered["players"], "players", None, None),
@@ -742,7 +876,11 @@ class TrackingCatalog:
             (path, "tracking", self._tracking_week(path), self._tracking_game(path))
             for path in discovered["tracking"]
         )
+        return self._hash_files(paths)
 
+    def _hash_files(
+        self, paths: list[tuple[Path, str, int | None, str | None]]
+    ) -> tuple[tuple[_SourceFile, ...], str]:
         files: list[_SourceFile] = []
         release_hash = hashlib.sha256()
         for path, role, week, game_id in paths:
@@ -894,6 +1032,16 @@ class TrackingCatalog:
                 errors INTEGER NOT NULL,
                 warnings INTEGER NOT NULL,
                 findings_json VARCHAR NOT NULL,
+                PRIMARY KEY (game_id, play_id)
+            );
+            CREATE TABLE IF NOT EXISTS routes (
+                game_id VARCHAR,
+                play_id VARCHAR,
+                route VARCHAR,
+                coverage VARCHAR,
+                coverage_type VARCHAR,
+                signature DOUBLE[] NOT NULL,
+                route_json VARCHAR NOT NULL,
                 PRIMARY KEY (game_id, play_id)
             );
             CREATE INDEX IF NOT EXISTS plays_offense_idx ON plays(offense);

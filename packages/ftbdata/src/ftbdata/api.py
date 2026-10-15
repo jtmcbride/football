@@ -88,6 +88,29 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> F
             "total": result.total,
         }
 
+    @app.get("/routes")
+    def find_routes(
+        route: str | None = Query(default=None, max_length=80),
+        coverage: str | None = Query(default=None, max_length=80),
+        coverage_type: str | None = Query(default=None, max_length=80),
+        game_id: str | None = Query(default=None, max_length=30),
+        play_id: str | None = Query(default=None, max_length=30),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=8, ge=1, le=50),
+    ) -> dict[str, Any]:
+        if (game_id is None) != (play_id is None):
+            raise HTTPException(status_code=422, detail="Supply both game_id and play_id for similarity search")
+        try:
+            return catalog.find_routes(
+                route=route, coverage=coverage, coverage_type=coverage_type,
+                reference=(game_id, play_id) if game_id is not None else None,
+                page=page, page_size=page_size,
+            )
+        except CatalogNotFoundError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
     @app.get("/plays/{game_id}/{play_id}")
     def load_play(game_id: str, play_id: str) -> dict[str, Any]:
         try:

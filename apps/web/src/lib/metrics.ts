@@ -5,8 +5,11 @@ export interface FrameMetrics {
   nearestSeparation: number | null;
   formationWidth: number | null;
   ballSpeed: number | null;
-  fastestPlayer: TrackedEntity | null;
+  fastestPlayer: MeasuredEntity | null;
 }
+
+/** An entity whose speed was tracked in the frame. */
+export type MeasuredEntity = TrackedEntity & { speed: number };
 
 export type AnalysisEventKind = "snap" | "release" | "arrival" | "catch" | "tackle";
 
@@ -106,10 +109,11 @@ export function frameMetrics(play: TrackingPlay, frameIndex: number): FrameMetri
     formationWidth = maximum - minimum;
   }
 
-  let fastestPlayer: TrackedEntity | null = null;
+  let fastestPlayer: MeasuredEntity | null = null;
   for (const entity of entities) {
-    if (entity.kind === "player" && (!fastestPlayer || entity.speed > fastestPlayer.speed)) {
-      fastestPlayer = entity;
+    if (entity.kind !== "player" || entity.speed === null) continue;
+    if (!fastestPlayer || entity.speed > fastestPlayer.speed) {
+      fastestPlayer = { ...entity, speed: entity.speed };
     }
   }
 

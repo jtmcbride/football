@@ -153,10 +153,23 @@ def build_play(
     play_row: dict[str, str],
     game_row: dict[str, str],
     player_lookup: dict[tuple[str, ...], dict[str, str]],
+    tracking_format: str | None = None,
+    pass_release_frame: int | None = None,
+    derived_events: dict[int, str] | None = None,
 ) -> dict[str, Any]:
-    """Normalize one play's raw tracking rows and attach quality and provenance."""
+    """Normalize one play's raw tracking rows and attach quality and provenance.
 
-    observations = SourceObservations(headers=frozenset(tracking_headers), rows=len(tracking_rows))
+    ``pass_release_frame`` marks a pass-window source, which tracks only some players and only
+    around the throw; it is the last frame before the ball is released. ``derived_events`` are
+    event labels inferred from the source's structure rather than annotated in it.
+    """
+
+    observations = SourceObservations(
+        headers=frozenset(tracking_headers),
+        rows=len(tracking_rows),
+        pass_release_frame=pass_release_frame,
+        derived_events=tuple(sorted(set((derived_events or {}).values()))),
+    )
     source_direction = next(
         (
             direction.lower()
@@ -199,7 +212,7 @@ def build_play(
             y = float(row["y"])
             orientation = _number(row.get("o"))
             direction = _number(row.get("dir"))
-            speed = _number(row.get("s")) or 0.0
+            speed = _number(row.get("s"))
             acceleration = _number(row.get("a"))
             jersey = _number(row.get("jerseyNumber"), integer=True)
         except (ValueError, TypeError, KeyError):
@@ -247,6 +260,8 @@ def build_play(
         if event:
             events_by_frame[frame_id].add(event)
 
+    for frame_id, name in (derived_events or {}).items():
+        events_by_frame[frame_id].add(name)
     observations.conflicting_event_frames = sum(1 for names in events_by_frame.values() if len(names) > 1)
     event_by_frame = {frame_id: sorted(names)[0] for frame_id, names in events_by_frame.items()}
     frame_ids = sorted(frame_rows)
@@ -264,13 +279,15 @@ def build_play(
         for frame_id in frame_ids
     ]
 
+    if tracking_format is None:
+        tracking_format = "legacy-game" if "frame.id" in tracking_headers else "weekly"
     play = {
         "schemaVersion": 1,
         "source": {
-            "name": "NFL Big Data Bowl official sample" if "frame.id" in tracking_headers else "NFL Big Data Bowl",
+            "name": "NFL Big Data Bowl official sample" if tracking_format == "legacy-game" else "NFL Big Data Bowl",
             "kind": "public-competition-data",
             "trackingFile": tracking_file,
-            "trackingFormat": "legacy-game" if "frame.id" in tracking_headers else "weekly",
+            "trackingFormat": tracking_format,
             "directionMethod": direction_method,
             "missingFields": [
                 field

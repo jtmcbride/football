@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { JOIN_STATUS_LABELS, formatEpa, formatPercent, formatScore, humanizeField } from "../lib/enrichment";
-import { frameMetrics } from "../lib/metrics";
+import { analysisEventKind, frameMetrics } from "../lib/metrics";
 import type { NflverseEnrichment, TrackingPlay } from "../lib/types";
 import { ProvenanceCard } from "./ProvenanceCard";
 
@@ -22,6 +22,12 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
     return undefined;
   }, [play.frames, selectedEntityId]);
   const entity = trackedEntity ?? selectedEntity;
+  const releaseFrame = play.play.passWindow
+    ? play.frames.find((frame) => frame.frameId === play.play.passWindow?.releaseFrameId)
+    : undefined;
+  const hasSnap = play.frames.some((frame) => frame.event && analysisEventKind(frame.event) === "snap");
+  const timeLabel = releaseFrame ? "TIME FROM RELEASE (DERIVED)" : hasSnap ? "TIME FROM SNAP" : "TIME FROM FIRST FRAME";
+  const elapsed = releaseFrame ? (play.frames[frameIndex].timeMs - releaseFrame.timeMs) / 1000 : metrics.elapsedSeconds;
 
   return (
     <aside className="sidebar">
@@ -57,7 +63,7 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
             <p>{entity.club} · {entity.position ?? "Position unavailable"}</p>
           </div>
           <dl className="selected-stats">
-            <div><dt>Speed</dt><dd>{trackedEntity ? trackedEntity.speed.toFixed(1) : "Unavailable"} {trackedEntity ? <small>yd/s</small> : null}</dd></div>
+            <div><dt>Speed</dt><dd>{trackedEntity?.speed === null || !trackedEntity ? "Unavailable" : trackedEntity.speed.toFixed(1)} {trackedEntity?.speed === null || !trackedEntity ? null : <small>yd/s</small>}</dd></div>
             <div><dt>Accel.</dt><dd>{trackedEntity?.acceleration === null || !trackedEntity ? "Unavailable" : trackedEntity.acceleration.toFixed(1)} {trackedEntity?.acceleration === null || !trackedEntity ? null : <small>yd/s²</small>}</dd></div>
             <div><dt>Field x</dt><dd>{trackedEntity ? trackedEntity.x.toFixed(1) : "Unavailable"} {trackedEntity ? <small>yd</small> : null}</dd></div>
             <div><dt>Field y</dt><dd>{trackedEntity ? trackedEntity.y.toFixed(1) : "Unavailable"} {trackedEntity ? <small>yd</small> : null}</dd></div>
@@ -71,7 +77,7 @@ export function PlaySidebar({ play, frameIndex, selectedEntityId }: PlaySidebarP
       )}
 
       <section className="metric-stack">
-        <Metric label="TIME FROM SNAP" value={`${signed(metrics.elapsedSeconds)} s`} accent />
+        <Metric label={timeLabel} value={`${signed(elapsed)} s`} accent />
         <Metric label="TIGHTEST MATCHUP" value={formatYards(metrics.nearestSeparation)} />
         <Metric label="OFFENSIVE WIDTH" value={formatYards(metrics.formationWidth)} />
         <Metric

@@ -18,6 +18,8 @@ renders a fast custom-SVG replay with player inspection and spatial summaries.
 - Linked selected-player speed and nearest-opponent separation charts
 - Snap-relative route depth, lateral movement, displacement, and event markers
 - Team centroids, RMS spatial spread, quarterback depth, and protection-envelope overlays
+- Route atlas with targeted-receiver and coverage filters, geometric similarity search, and up to three comparison overlays
+- Recorded pass landing points and explicit pre-throw / in-flight boundaries for 2026 plays
 - Explicit unavailable states for source fields such as 2017 acceleration and orientation
 - Big Data Bowl CSV → compact play JSON extraction
 - Correct 180° normalization of leftward plays, including `x`, `y`, `dir`, and `o`
@@ -127,6 +129,66 @@ Use **Open play JSON** in the app and select that export. The catalog loader
 streams the week CSV and retains only the selected play, so memory use does not
 scale with the full tracking file.
 
+### 2026 pass-window release
+
+The 2026 Big Data Bowl (`nfl-big-data-bowl-2026-analytics`) has a different shape: it covers
+14,108 pass plays from the 2023 season, but each play only tracks what the competition's task
+needed. `train/input_2023_wNN.csv` has every frame before the throw for the passer, route
+runners, and coverage defenders (6–14 players, with speed, acceleration, direction, and
+orientation). `train/output_2023_wNN.csv` has only x and y for the players to predict while the
+pass is in the air. Game and play context, including formation and coverage, comes from
+`supplementary_data.csv`. Place `supplementary_data.csv` and `train/` in one directory and ingest
+it like any other release:
+
+```bash
+uv run football ingest bdb \
+  --input data/raw/nfl-big-data-bowl-2026-analytics \
+  --database data/db/bdb-2026.duckdb
+```
+
+The catalog joins the two windows into one replay, numbering the in-flight frames after the last
+pre-throw frame. Post-throw speed, acceleration, and direction are served as unavailable (`null`),
+not filled in. The source has no football, linemen, jersey numbers, or annotated events, so the
+football-coverage and yard-line checks report `unavailable`. `pass_forward` (last pre-throw frame) and
+`pass_arrived` (last in-flight frame) are derived from the windows and labeled as derived in the
+quality report. There is no snap event, so snap-relative measurements and the protection envelope
+are unavailable for these plays. Supplementary plays without tracking (3,901 of 18,009) are left
+out and counted in the ingest warnings. On the development machine the full release ingests in
+about 85 s with a 241 MB peak memory footprint, and 14,107 of 14,108 plays are graded valid. The
+one incomplete play tracks only the passer in flight.
+
+### Route atlas
+
+Re-run the 2026 ingest command above once to upgrade existing catalogs to schema 6,
+which indexes compact targeted-receiver paths alongside play metadata. Then run
+`uv run football serve --database data/db/bdb-2026.duckdb` and `make dev`.
+Open **Routes**, browse by route and man/zone coverage, and open a replay. Choose
+**Find similar to current play**, then check **Overlay** on up to three results.
+Comparison paths appear both in the atlas plot and on the replay field, translated
+to the current receiver's release position. The **Routes** and **Landing** toggles
+control the field overlays. The landing cross is the recorded pass destination,
+not a tracked football position. Release and arrival boundaries are derived from
+the source input/output windows.
+
+Similarity is RMS Euclidean distance (yards) between 21 samples at equal fractions
+of each observed pre-throw time window. Coordinates are normalized left-to-right
+and centered on the target receiver at release. We preserve distance and lateral
+direction: there is no scaling or lateral reflection. Duration is displayed but
+does not affect ranking. This is geometric retrieval, not a trained model or a
+claim that two plays share an assignment. Route labels apply only to the targeted
+receiver; coverage describes the defense. Labels, landing points, and in-flight
+positions are excluded from the similarity signature. There is no snap baseline.
+
+`GET /routes` browses the index; adding `game_id` and `play_id` ranks other routes
+against that play. Optional `route`, `coverage`, `coverage_type`, `page`, and `page_size` parameters
+filter/paginate the results. Search returns metadata, compact paths, reference
+geometry, filter options, and indexed/catalog counts. Invalid plays and paths with
+missing/duplicate target frames, unknown direction, or ambiguous target identity
+are excluded. Older sources without target-role labels report the atlas as
+unavailable; existing 2026 catalogs request re-ingest rather than scanning CSVs
+on each search. The local 2023 release yielded 14,108 indexed paths; a sample
+full-catalog similarity query took about 44 ms on the development machine.
+
 The official NFL GitHub sample uses an older game-level schema. Place its four
 CSVs in `data/raw/nfl-official-2017-sample/`, then run `make sample`. The
 catalog maps its legacy `frame.id`, `team`, player-name, and position fields,
@@ -200,7 +262,7 @@ integration surface.
 
 ## Next useful slices
 
-1. Profile cataloging against an accepted full release and add resumable fingerprint checkpoints.
-2. Compare plays and aggregate repeated route and team-shape patterns without implying league-wide coverage.
+1. Add duration-aware or fixed-time-window route comparison alongside the atlas's shape distance.
+2. Aggregate route/coverage patterns with sample sizes, then evaluate trajectory prediction on held-out games.
 3. Ingest nflverse participation data for formation and personnel in seasons that lack them.
 4. Train only after establishing season/game splits that prevent play-family and team leakage.

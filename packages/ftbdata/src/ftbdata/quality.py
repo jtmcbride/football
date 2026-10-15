@@ -29,7 +29,7 @@ from typing import Any, Iterable
 
 from .field import FIELD_LENGTH, FIELD_WIDTH
 
-QUALITY_VERSION = 1
+QUALITY_VERSION = 2
 
 TRACKING_HZ = 10
 FRAME_MS = 1000 // TRACKING_HZ
@@ -110,6 +110,11 @@ class SourceObservations:
     field_values: Counter[str] = field(default_factory=Counter)
     headers: frozenset[str] = frozenset()
     rotated: bool = False
+    #: Set for a pass-window source (the passer, route runners, and coverage defenders before the
+    #: throw, then only predicted players): the last frame before the ball is released.
+    pass_release_frame: int | None = None
+    #: Event labels inferred from the source's structure rather than annotated in it.
+    derived_events: tuple[str, ...] = ()
 
 
 def software() -> dict[str, str]:
@@ -137,10 +142,10 @@ def assess_play(
         _coordinates(frames),
         _frame_order(observations),
         _cadence(frames, observations),
-        _identity(frames),
-        _ball(frames),
+        _identity(frames, observations),
+        _ball(frames, observations),
         _events(frames, observations),
-        _entity_count(frames),
+        _entity_count(frames, observations),
         _direction(play, observations),
         _yardline(play, frames),
         _heading(frames, generated),
@@ -279,16 +284,21 @@ def _cadence(frames: list[dict[str, Any]], obs: SourceObservations | None) -> di
     return _check("cadence", label, PASS, f"{len(ids)} consecutive frames at {FRAME_MS} ms, from {basis}")
 
 
-def _identity(frames: list[dict[str, Any]]) -> dict[str, Any]:
+def _identity(frames: list[dict[str, Any]], obs: SourceObservations | None = None) -> dict[str, Any]:
     label = "Player identity"
     clubs: dict[str, set[str]] = {}
     jerseys: dict[str, set[int]] = {}
     seen: Counter[str] = Counter()
+    release = _pass_release(obs)
+    # A pass-window source stops tracking most players at the throw by design, so dropouts are
+    # measured only before it.
+    window = [frame for frame in frames if release is None or frame["frameId"] <= release]
     for frame in frames:
         for entity in frame["entities"]:
             if entity["kind"] != "player":
                 continue
-            seen[entity["id"]] += 1
+            if release is None or frame["frameId"] <= release:
+                seen[entity["id"]] += 1
             clubs.setdefault(entity["id"], set()).add(entity["club"])
             if entity["jersey"] is not None:
                 jerseys.setdefault(entity["id"], set()).add(entity["jersey"])
@@ -297,7 +307,7 @@ def _identity(frames: list[dict[str, Any]]) -> dict[str, Any]:
 
     switched = sorted(player for player, values in clubs.items() if len(values) > 1)
     renumbered = sorted(player for player, values in jerseys.items() if len(values) > 1)
-    dropouts = sorted(player for player, count in seen.items() if count < len(frames))
+    dropouts = sorted(player for player, count in seen.items() if count < len(window))
     if switched:
         return _check(
             "identity", label, ERROR,
@@ -307,7 +317,8 @@ def _identity(frames: list[dict[str, Any]]) -> dict[str, Any]:
     if renumbered:
         problems.append(f"{len(renumbered)} ids change jersey number (e.g. {renumbered[0]})")
     if dropouts:
-        problems.append(f"{len(dropouts)} players missing from some frames (e.g. {dropouts[0]})")
+        scope = "pre-throw frames" if release is not None else "frames"
+        problems.append(f"{len(dropouts)} players missing from some {scope} (e.g. {dropouts[0]})")
     if problems:
         return _check("identity", label, WARNING, "; ".join(problems), len(renumbered) + len(dropouts))
     return _check("identity", label, PASS, f"{len(seen)} players keep one team and jersey in every frame")
@@ -327,11 +338,13 @@ def _intervals(flags: list[bool], ids: list[int]) -> list[tuple[int, int]]:
     return ranges
 
 
-def _ball(frames: list[dict[str, Any]]) -> dict[str, Any]:
+def _ball(frames: list[dict[str, Any]], obs: SourceObservations | None = None) -> dict[str, Any]:
     label = "Football coverage"
     ids = [frame["frameId"] for frame in frames]
     missing_flags = [not any(entity["kind"] == "ball" for entity in frame["entities"]) for frame in frames]
     missing = sum(missing_flags)
+    if missing == len(frames) and _pass_release(obs) is not None:
+        return _check("ball", label, UNAVAILABLE, "This source does not track the football")
     if missing == len(frames):
         return _check("ball", label, WARNING, "The football is not tracked in any frame", missing)
     if not missing:
@@ -384,13 +397,22 @@ def _events(frames: list[dict[str, Any]], obs: SourceObservations | None) -> dic
 
     if problems:
         return _check("events", label, WARNING, "; ".join(problems), len(problems))
+    if obs and obs.derived_events:
+        return _check(
+            "events", label, INFO,
+            f"No events are annotated; {' and '.join(obs.derived_events)} are derived from where the "
+            "source's pre-throw and in-flight windows end",
+        )
     if not events:
         return _check("events", label, INFO, "No events are annotated in this play")
     return _check("events", label, PASS, f"{len(events)} annotated events are in a consistent order")
 
 
-def _entity_count(frames: list[dict[str, Any]]) -> dict[str, Any]:
+def _entity_count(frames: list[dict[str, Any]], obs: SourceObservations | None = None) -> dict[str, Any]:
     label = "Entity count"
+    release = _pass_release(obs)
+    if release is not None:
+        return _pass_window_entity_count(frames, release)
     player_counts: Counter[int] = Counter()
     extra_ball = 0
     club_counts: Counter[int] = Counter()
@@ -413,6 +435,43 @@ def _entity_count(frames: list[dict[str, Any]]) -> dict[str, Any]:
     if problems:
         return _check("entity-count", label, WARNING, "; ".join(problems), off_count + extra_ball)
     return _check("entity-count", label, PASS, f"{EXPECTED_PLAYERS} players on two teams in every frame")
+
+
+def _pass_window_entity_count(frames: list[dict[str, Any]], release: int) -> dict[str, Any]:
+    label = "Entity count"
+    before: list[int] = []
+    after: list[int] = []
+    one_team = 0
+    for frame in frames:
+        players = [entity for entity in frame["entities"] if entity["kind"] == "player"]
+        if frame["frameId"] <= release:
+            before.append(len(players))
+            one_team += 1 if len({entity["club"] for entity in players}) != 2 else 0
+        else:
+            after.append(len(players))
+    crowded = sum(1 for count in before + after if count > EXPECTED_PLAYERS)
+    problems: list[str] = []
+    if crowded:
+        problems.append(f"{crowded} frames have more than {EXPECTED_PLAYERS} players")
+    if one_team:
+        problems.append(f"Players do not split into exactly two teams in {one_team} pre-throw frames")
+    if problems:
+        return _check("entity-count", label, WARNING, "; ".join(problems), crowded + one_team)
+
+    def span(counts: list[int]) -> str:
+        low, high = min(counts), max(counts)
+        return f"{low}" if low == high else f"{low}–{high}"
+
+    tracked = f"{span(before)} players before the throw"
+    tracked += f" and {span(after)} after" if after else "; no frames after the throw"
+    return _check(
+        "entity-count", label, INFO,
+        f"This source tracks only the passer, route runners, and coverage defenders: {tracked}",
+    )
+
+
+def _pass_release(obs: SourceObservations | None) -> int | None:
+    return obs.pass_release_frame if obs else None
 
 
 def _direction(play: dict[str, Any], obs: SourceObservations | None) -> dict[str, Any]:
@@ -473,7 +532,9 @@ def _heading(frames: list[dict[str, Any]], generated: bool) -> dict[str, Any]:
     for positions in by_player.values():
         for frame_id in ids:
             entity, before, after = positions.get(frame_id), positions.get(frame_id - 1), positions.get(frame_id + 1)
-            if not (entity and before and after) or entity["direction"] is None or entity["speed"] < HEADING_MIN_SPEED:
+            if not (entity and before and after) or entity["direction"] is None or entity["speed"] is None:
+                continue
+            if entity["speed"] < HEADING_MIN_SPEED:
                 continue
             dx, dy = after["x"] - before["x"], after["y"] - before["y"]
             if math.hypot(dx, dy) < HEADING_MIN_DISPLACEMENT:

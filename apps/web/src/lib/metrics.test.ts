@@ -29,6 +29,23 @@ describe("frameMetrics", () => {
     expect(result.formationWidth).toBe(40);
     expect(result.fastestPlayer?.name).toBe("O2");
   });
+
+  it("ignores players whose speed is not tracked, such as pass-window players after the throw", () => {
+    const inFlight: TrackingPlay = {
+      ...play,
+      frames: [{
+        ...play.frames[0],
+        entities: play.frames[0].entities.map((entity) => (entity.id === "o2" ? { ...entity, speed: null } : entity)),
+      }],
+    };
+    expect(frameMetrics(inFlight, 0).fastestPlayer?.name).toBe("D");
+
+    const untracked: TrackingPlay = {
+      ...play,
+      frames: [{ ...play.frames[0], entities: play.frames[0].entities.map((entity) => ({ ...entity, speed: null })) }],
+    };
+    expect(frameMetrics(untracked, 0).fastestPlayer).toBeNull();
+  });
 });
 
 describe("playerAnalysis", () => {
