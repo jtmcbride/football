@@ -168,6 +168,21 @@ class TrackingCatalog:
     def __init__(self, database_path: str | Path):
         self.database_path = Path(database_path)
 
+    def pass_flight_source(self) -> tuple[pass_window.Release, str, list[str]]:
+        """Verify source bytes still match the catalog before a reproducible evaluation."""
+        health = self.data_health()
+        if not health.ready or not health.source_root:
+            raise CatalogError("Ingest a pass-window release before evaluation")
+        discovered = self._discover_release(Path(health.source_root))
+        if discovered["source_format"] != pass_window.TRACKING_FORMAT:
+            raise CatalogError("Pass-flight evaluation requires a pass-window release")
+        _, fingerprint = self._fingerprint(discovered)
+        if fingerprint != health.fingerprint:
+            raise CatalogError("Source files changed; re-ingest before evaluation")
+        with self._connect() as connection:
+            game_ids = [row[0] for row in connection.execute("SELECT game_id FROM games ORDER BY game_id").fetchall()]
+        return discovered["release"], fingerprint, game_ids
+
     def ingest_release(self, source_directory: str | Path) -> IngestReport:
         source_root = Path(source_directory).expanduser().resolve()
         discovered = self._discover_release(source_root)

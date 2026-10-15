@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from . import quality, routes
+from . import flight, quality, routes
 from .field import FIELD_LENGTH, FIELD_WIDTH
 from .tracking import build_play as build_tracking_play
 
@@ -197,6 +197,22 @@ def load_play(
     )
 
 
+def iter_plays(release: Release, game_ids: set[str]) -> Iterator[dict[str, Any]]:
+    """Stream selected games once for evaluation, rejecting repeated play blocks."""
+    supplementary = _supplementary(release.supplementary)
+    seen: set[Key] = set()
+    for week in release.weeks:
+        outputs = _grouped(row for row in _rows(week.output) if row["game_id"] in game_ids) if week.output else {}
+        for key, rows in _contiguous(_rows(week.input)):
+            if key[0] not in game_ids or key not in supplementary:
+                continue
+            if key in seen:
+                raise ValueError(f"Repeated tracking block for {key}; cannot evaluate reliably")
+            seen.add(key)
+            yield build_play(rows, outputs.get(key, []), supplementary[key],
+                             input_file=week.input.name, output_file=week.output.name if week.output else None)
+
+
 def build_play(
     input_rows: list[dict[str, str]],
     output_rows: list[dict[str, str]],
@@ -266,6 +282,7 @@ def build_play(
     if output_file and output_rows:
         files.append(output_file)
     play["provenance"]["files"] = files
+    play["flightForecast"] = flight.release_states(play)
     return play
 
 

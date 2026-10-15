@@ -47,6 +47,34 @@ and one event-alignment inconsistency. This is still only one game. The legacy s
 has no acceleration or orientation, and its yard-line cross-check is unavailable
 because direction and the line of scrimmage are inferred from the same ball positions.
 
+## Pass-flight prediction follow-on
+
+The constant-velocity baseline is implemented on top of the route atlas and the
+2026 pass-window adapter. Release position, speed and movement direction define
+the forecast; future labels are accessed only for scoring. The replay shows hollow
+ghosts, error connectors, per-player displacement errors and linked flight scrubbing.
+Missing motion inputs/labels remain unavailable and projections are never clipped.
+
+`football evaluate-flight` verifies source bytes against the catalog, uses a fixed
+SHA-256 game split (bucket zero of five), and writes a versioned JSON report with
+exact game lists, fingerprint, exclusions, and metrics by game, role and 0.1-second
+horizon. No parameters are fitted. In the current 2023-season release, 49 held-out
+games produce 2,511 plays, 8,261 trajectories and 101,188 observed player-frames:
+coordinate RMSE 1.6414 yd, mean Euclidean error 1.4201 yd, final error 2.7236 yd.
+All holdout inputs and labels were available; 223 games remain in development.
+Targeted-receiver RMSE is 1.3276 yd; coverage-defender RMSE is 1.7494 yd.
+At 1.0 s RMSE is 1.4717 yd (5,066 samples); at 2.0 s it is 3.8296 yd (999 samples).
+Changing horizon also changes the cohort, so these are not fixed-cohort growth curves.
+
+Remaining prediction work: compare additional baselines using development games,
+introduce a separate validation split before tuning, and retain the game holdout
+for final comparisons. Any landing-conditioned model must be labeled separately.
+Source participants are selected using eventual throw information, release/arrival
+events are derived, and frame-weighted metrics give longer flights more weight.
+Neither this single-season benchmark nor the 2017 single-game sample establishes
+league-wide or live-game accuracy. The initial phase's predictive-model non-goal
+below remains historical; this separately scoped follow-on introduces only the baseline.
+
 ## Route atlas follow-on
 
 The first route-atlas slice is implemented for pass-window releases. Served plays

@@ -6,6 +6,8 @@ import { PlaySidebar } from "./components/PlaySidebar";
 import { TeamShapePanel } from "./components/TeamShapePanel";
 import { RouteAtlas } from "./components/RouteAtlas";
 import { Timeline } from "./components/Timeline";
+import { FlightLab } from "./components/FlightLab";
+import { flightGhosts } from "./lib/flight";
 import { fetchTrackingPlay } from "./lib/catalog";
 import { clampFrame, isLinkedTo, parsePlayLink, withPlayLink, withoutPlayLink } from "./lib/playLink";
 import { qualityBadge } from "./lib/provenance";
@@ -65,6 +67,7 @@ export default function App() {
   const [showTeamShape, setShowTeamShape] = useState(true);
   const [showRoutes, setShowRoutes] = useState(true);
   const [showLanding, setShowLanding] = useState(true);
+  const [showGhosts, setShowGhosts] = useState(true);
   const [routeSelection, setRouteSelection] = useState<{ owner: TrackingPlay; routes: RoutePath[] } | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -168,6 +171,7 @@ export default function App() {
   }, []);
 
   const shapeSeries = useMemo(() => play ? teamShapeSeries(play) : [], [play]);
+  const ghosts = useMemo(() => play ? flightGhosts(play, frameIndex) : [], [play, frameIndex]);
   const shapeSnapshot = shapeSeries[frameIndex] ?? null;
   const currentRoute = useMemo(() => play ? observedRoute(play) : null, [play]);
   const routeOverlays = routeSelection?.owner === play ? routeSelection.routes : NO_ROUTES;
@@ -195,6 +199,7 @@ export default function App() {
           <a href="#play-browser">Plays</a>
           <a className="active" href="#replay">Replay</a>
           <a href="#route-atlas">Routes</a>
+          <a href="#flight-lab">Prediction</a>
           <a href="#data-notes">Data notes</a>
         </nav>
         <button className="open-button" type="button" onClick={() => fileInput.current?.click()}>
@@ -247,6 +252,7 @@ export default function App() {
                 <Toggle label="Shape" checked={showTeamShape} onChange={setShowTeamShape} />
                 <Toggle label="Routes" checked={showRoutes} onChange={setShowRoutes} />
                 <Toggle label="Landing" checked={showLanding} onChange={setShowLanding} />
+                <Toggle label="Ghosts" checked={showGhosts} onChange={setShowGhosts} />
               </div>
             </div>
             <FieldReplay
@@ -260,6 +266,8 @@ export default function App() {
               currentRoute={showRoutes ? currentRoute : null}
               routeOverlays={showRoutes ? routeOverlays : NO_ROUTES}
               showLanding={showLanding}
+              ghosts={ghosts}
+              showGhosts={showGhosts}
               onSelectEntity={setSelectedEntityId}
               selectedEntityId={selectedEntityId}
             />
@@ -275,6 +283,8 @@ export default function App() {
               }}
               onRateChange={setPlaybackRate}
             />
+            <FlightLab play={play} frameIndex={frameIndex} ghosts={ghosts}
+              onFrameChange={changeFrame} onSelectEntity={setSelectedEntityId} />
             <PlayerAnalysis
               play={play}
               frameIndex={frameIndex}

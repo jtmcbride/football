@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import asdict
 from pathlib import Path
@@ -12,7 +13,7 @@ from .nflverse import JoinCount, JoinCoverage, camel_case
 from .quality import QualityCount, QualityReport
 
 
-def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> FastAPI:
+def create_app(database_path: str | Path = Path("data/db/football.duckdb"), *, flight_report: Path | None = None) -> FastAPI:
     catalog = TrackingCatalog(database_path)
     app = FastAPI(
         title="Football Motion Lab API",
@@ -24,6 +25,20 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb")) -> F
     def process_health() -> dict[str, Any]:
         health = catalog.data_health()
         return {"status": "ok", "catalogReady": health.ready}
+
+    @app.get("/flight-report")
+    def prediction_report() -> dict[str, Any]:
+        from .flight import VERSION
+
+        if flight_report is None:
+            raise HTTPException(status_code=503, detail="Held-out measurements unavailable. Run football evaluate-flight and serve with --flight-report.")
+        try:
+            report = json.loads(flight_report.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise HTTPException(status_code=503, detail="Evaluation report cannot be read; regenerate it.") from error
+        if not isinstance(report, dict) or report.get("version") != VERSION or report.get("fingerprint") != catalog.data_health().fingerprint:
+            raise HTTPException(status_code=409, detail="Evaluation report does not match this catalog or baseline; regenerate it.")
+        return report
 
     @app.get("/data-health")
     def data_health() -> dict[str, Any]:

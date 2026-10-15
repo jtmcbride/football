@@ -81,6 +81,10 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument("--database", type=Path, default=Path("data/db/football.duckdb"))
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--flight-report", type=Path, help="Held-out evaluation JSON to show in the prediction lab")
+    evaluate = commands.add_parser("evaluate-flight", help="Measure constant velocity on a fixed game holdout")
+    evaluate.add_argument("--database", type=Path, required=True)
+    evaluate.add_argument("--output", type=Path, required=True)
     return root
 
 
@@ -92,7 +96,15 @@ def main(argv: list[str] | None = None) -> int:
 
             from .api import create_app
 
-            uvicorn.run(create_app(args.database), host=args.host, port=args.port)
+            uvicorn.run(create_app(args.database, flight_report=args.flight_report), host=args.host, port=args.port)
+            return 0
+        if args.command == "evaluate-flight":
+            from .flight import evaluate
+
+            report = evaluate(TrackingCatalog(args.database))
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+            print(json.dumps({"output": str(args.output), "counts": report["counts"], "overall": report["overall"]}, indent=2))
             return 0
         if args.command == "ingest":
             catalog = TrackingCatalog(args.database)
@@ -154,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     except CatalogValidationError as error:
         print(json.dumps({"status": "invalid", "errors": error.errors}, indent=2), file=sys.stderr)
         return 2
-    except CatalogError as error:
+    except (CatalogError, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 1
 

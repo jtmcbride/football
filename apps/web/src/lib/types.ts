@@ -98,6 +98,7 @@ export interface Provenance {
 }
 
 export interface TrackingPlay {
+  flightForecast?: import("./flight").FlightForecast;
   schemaVersion: number;
   source: {
     name: string;

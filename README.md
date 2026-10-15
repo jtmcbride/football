@@ -266,3 +266,48 @@ integration surface.
 2. Aggregate route/coverage patterns with sample sizes, then evaluate trajectory prediction on held-out games.
 3. Ingest nflverse participation data for formation and personnel in seasons that lack them.
 4. Train only after establishing season/game splits that prevent play-family and team leakage.
+## Pass-flight prediction lab
+
+Pass-window plays now include a constant-velocity forecast for the source-selected
+prediction participants. Turn on **Ghosts** above the replay: hollow white markers
+show projected positions, and dashed connectors show error against observed positions.
+The prediction lab shares the replay playhead, supports release/arrival jumps and
+keyboard scrubbing, and exposes per-player errors and missing-input states.
+
+Generate the reproducible game-held-out benchmark and serve it with the catalog:
+
+```bash
+uv run football evaluate-flight --database data/db/bdb-2026.duckdb --output data/exports/pass-flight-report.json
+uv run football serve --database data/db/bdb-2026.duckdb --flight-report data/exports/pass-flight-report.json
+make dev
+```
+
+No re-ingest is needed for a current schema-6 catalog. Older JSON exports need to be
+re-exported to include release states. Evaluation verifies source contents against
+the catalog fingerprint; the API rejects reports from another catalog or baseline
+version. Without `--flight-report`, replay ghosts still work and the benchmark shows
+an explicit unavailable state. The full report is available at `/flight-report`
+(`/api/flight-report` through the development server).
+
+On the local 2026 release (2023 season), the fixed split assigns 49 games to holdout
+and 223 to development. **2,511 held-out plays / 8,261 player trajectories / 101,188
+player-frames** score **1.6414 yd coordinate RMSE, 1.4201 yd mean displacement error,
+and 2.7236 yd final displacement error**. No held-out plays, release inputs, or labels
+were excluded/missing in this run. The JSON includes the exact game lists, source
+fingerprint, per-game/per-role/per-horizon metrics, sample counts, and exclusions.
+
+This is an unfitted baseline: `vx = speed × sin(dir)`, `vy = speed × cos(dir)` at
+the last input frame, then position advances at that frozen velocity. The game split
+uses the first eight hex digits of SHA-256 of `pass-flight-v1:<gameId>`, modulo 5;
+bucket zero is held out. Neither landing point nor output positions nor flight
+duration enter the predictor. Output length defines the evaluation window only.
+Coordinate RMSE divides total squared Euclidean error by twice the observed
+player-frame count. Mean displacement error is frame-weighted; final error uses
+available labels at the play's last output frame. Missing labels are not interpolated,
+and off-field forecasts are not clipped. Release/arrival boundaries are derived.
+
+Dataset participant selection itself uses future throw information, so these scores
+describe the selected receivers and defenders in this release, not all NFL players
+or live-game performance. The 2017 sample lacks these prediction-participant labels
+and remains unavailable for this lab. Acceleration, learned models, landing-conditioned
+forecasts, and uncertainty estimation are future work.
