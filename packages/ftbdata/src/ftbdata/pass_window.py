@@ -18,13 +18,14 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from . import quality
+from . import quality, routes
 from .field import FIELD_LENGTH, FIELD_WIDTH
 from .tracking import build_play as build_tracking_play
 
@@ -79,6 +80,7 @@ class CatalogRows:
     players: list[tuple[Any, ...]] = field(default_factory=list)
     validations: dict[Key, dict[str, Any]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    routes: list[tuple[Any, ...]] = field(default_factory=list)
 
 
 def is_release(root: Path) -> bool:
@@ -149,6 +151,11 @@ def catalog_rows(release: Release) -> CatalogRows:
                     input_file=week.input.name, output_file=week.output.name if week.output else None,
                 )
                 result.validations[key] = play["provenance"]["validation"]
+                route = routes.describe(play)
+                if route is not None and result.validations[key]["status"] != quality.INVALID:
+                    route.update({"season": _integer(context.get("season")), "week": _integer(context.get("week"))})
+                    result.routes.append((*key, route["route"], route["coverage"], route["coverageType"],
+                                          routes.signature(route), json.dumps(route, separators=(",", ":"))))
             except (ValueError, KeyError) as error:
                 result.validations[key] = quality.failed_validation(f"Could not be assessed: {error}")
             tracked[key] = {**context, "absolute_yardline_number": rows[0].get("absolute_yardline_number", "")}
@@ -238,6 +245,23 @@ def build_play(
         derived_events=derived_events,
     )
     play["play"]["ballLanding"] = _ball_landing(first, play["play"]["originalDirection"])
+    targets = [nfl_id for nfl_id, row in players.items() if row.get("player_role") == "Targeted Receiver"]
+    play["play"]["passWindow"] = {
+        "route": _text(supplementary.get("route_of_targeted_receiver")),
+        "coverage": _text(supplementary.get("team_coverage_man_zone")),
+        "coverageType": _text(supplementary.get("team_coverage_type")),
+        "formation": _text(supplementary.get("offense_formation")),
+        "targetReceiverId": targets[0] if len(targets) == 1 else None,
+        "releaseFrameId": release_frame,
+        "arrivalFrameId": last_frame if last_frame > release_frame else None,
+        "eventSource": "derived-window-boundaries",
+    }
+    for frame in play["frames"]:
+        for entity in frame["entities"]:
+            source = players[entity["id"]]
+            entity["role"] = _text(source.get("player_role"))
+            predicted = (source.get("player_to_predict") or "").strip().lower()
+            entity["playerToPredict"] = predicted == "true" if predicted in {"true", "false"} else None
     files = [SUPPLEMENTARY_FILE, input_file]
     if output_file and output_rows:
         files.append(output_file)
@@ -282,7 +306,7 @@ def _tracking_context(supplementary: dict[str, str], first_input: dict[str, str]
 
 def _ball_landing(row: dict[str, str], direction: str) -> dict[str, float] | None:
     x, y = _float(row.get("ball_land_x")), _float(row.get("ball_land_y"))
-    if x is None or y is None:
+    if x is None or y is None or not math.isfinite(x) or not math.isfinite(y):
         return None
     if direction == "left":
         x, y = FIELD_LENGTH - x, FIELD_WIDTH - y

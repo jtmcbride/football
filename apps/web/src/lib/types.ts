@@ -14,6 +14,9 @@ export interface TrackedEntity {
   acceleration: number | null;
   orientation: number | null;
   direction: number | null;
+  /** Source role; the play's route label applies only to the Targeted Receiver. */
+  role?: string | null;
+  playerToPredict?: boolean | null;
 }
 
 export interface TrackingFrame {
@@ -125,6 +128,16 @@ export interface TrackingPlay {
     normalizedDirection: "right" | "unknown";
     /** Where a pass-window release records the pass landing, normalized like the frames. */
     ballLanding?: { x: number; y: number } | null;
+    passWindow?: {
+      route: string | null;
+      coverage: string | null;
+      coverageType: string | null;
+      formation: string | null;
+      targetReceiverId: string | null;
+      releaseFrameId: number;
+      arrivalFrameId: number | null;
+      eventSource: "derived-window-boundaries";
+    };
   };
   frames: TrackingFrame[];
   enrichment?: { nflverse?: NflverseEnrichment };

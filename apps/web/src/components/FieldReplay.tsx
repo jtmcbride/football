@@ -1,6 +1,8 @@
 import { memo, useMemo } from "react";
 import type { TeamShapeSnapshot } from "../lib/teamShape";
 import type { TrackingFrame, TrackingPlay } from "../lib/types";
+import { fieldRoutePoints, overlayDash, routeKey, routeLabel } from "../lib/routes";
+import type { RoutePath } from "../lib/routes";
 
 const VIEW_WIDTH = 1200;
 const VIEW_HEIGHT = 533;
@@ -14,6 +16,9 @@ interface FieldReplayProps {
   showOrientation: boolean;
   showTeamShape: boolean;
   teamShape: TeamShapeSnapshot | null;
+  currentRoute: RoutePath | null;
+  routeOverlays: RoutePath[];
+  showLanding: boolean;
   onSelectEntity: (id: string | null) => void;
   selectedEntityId: string | null;
 }
@@ -26,12 +31,17 @@ export const FieldReplay = memo(function FieldReplay({
   showOrientation,
   showTeamShape,
   teamShape,
+  currentRoute,
+  routeOverlays,
+  showLanding,
   onSelectEntity,
   selectedEntityId,
 }: FieldReplayProps) {
   const frame = play.frames[frameIndex];
   const trails = useMemo(() => buildTrails(play.frames, frameIndex), [play.frames, frameIndex]);
   const yardLines = Array.from({ length: 13 }, (_, index) => index * 10);
+  const window = play.play.passWindow;
+  const landing = play.play.ballLanding;
 
   return (
     <div className="field-shell">
@@ -90,6 +100,21 @@ export const FieldReplay = memo(function FieldReplay({
         ) : null}
 
         {showTeamShape && teamShape ? <TeamShapeOverlay snapshot={teamShape} /> : null}
+
+        {currentRoute ? <g className="field-route-overlay" aria-label="Full observed pre-throw routes aligned at receiver release">
+          <polyline className="field-route reference" points={fieldRoutePoints(currentRoute)} />
+          {routeOverlays.map((route, index) => <polyline key={routeKey(route)} className="field-route comparison"
+            strokeDasharray={overlayDash(index)} points={fieldRoutePoints(route, currentRoute.release)}>
+            <title>Overlay {index + 1}: {route.receiverName}, play {route.playId}</title>
+          </polyline>)}
+          <circle cx={currentRoute.release.x * SCALE} cy={currentRoute.release.y * SCALE} r="7" className="route-release-mark"><title>Target receiver at release</title></circle>
+        </g> : null}
+
+        {showLanding && landing ? <g className="landing-mark" transform={`translate(${landing.x * SCALE} ${landing.y * SCALE})`}>
+          <title>Recorded pass landing point; not a tracked football position</title>
+          <circle r="13" /><path d="M -7 -7 L 7 7 M -7 7 L 7 -7" />
+          <text y="-20" textAnchor="middle">PASS LANDING</text>
+        </g> : null}
 
         {showTrails ? trails.map((trail) => (
           <polyline key={trail.id} points={trail.points} className={`trail ${teamClass(trail.club, play)}`} />
@@ -153,6 +178,14 @@ export const FieldReplay = memo(function FieldReplay({
           );
         })}
       </svg>
+      {window ? <div className="pass-window-strip">
+        <span>Target route <b>{routeLabel(window.route)}</b></span>
+        <span>Coverage <b>{routeLabel(window.coverageType ?? window.coverage)}</b></span>
+        <span>Formation <b>{routeLabel(window.formation)}</b></span>
+        <span><b>{frame.frameId < window.releaseFrameId ? "Pre-throw" : frame.frameId === window.releaseFrameId ? "Release" : frame.frameId === window.arrivalFrameId ? "Arrival boundary" : "In flight"}</b> · boundaries derived</span>
+        <a href="#route-atlas">Open route atlas →</a>
+        <small>{currentRoute ? "Solid orange: full observed target route · dashed blue: comparison routes aligned at release. " : ""}{showLanding && landing ? "Landing is recorded, not a live ball position. " : ""}Route label applies only to the targeted receiver.</small>
+      </div> : null}
       <div className="direction-ribbon" aria-hidden="true">
         <span>OFFENSE</span><i /><b>{play.play.normalizedDirection === "right" ? "RIGHT" : "UNKNOWN"}</b>
       </div>

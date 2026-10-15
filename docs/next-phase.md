@@ -47,7 +47,27 @@ and one event-alignment inconsistency. This is still only one game. The legacy s
 has no acceleration or orientation, and its yard-line cross-check is unavailable
 because direction and the line of scrimmage are inferred from the same ball positions.
 
-## Objective
+## Route atlas follow-on
+
+The first route-atlas slice is implemented for pass-window releases. Served plays
+expose target roles, targeted-receiver route, coverage, formation, normalized
+landing coordinates, and derived release/arrival frame boundaries. Catalog schema
+6 stores 21-point release-relative pre-throw path signatures during ingestion.
+The read-only `/routes` endpoint supports browsing, route/man-zone filtering, and
+geometric nearest-route search. The UI supports opening results and overlaying up
+to three comparisons on a release-relative plot and the replay field. Search is
+independent of route/coverage labels and future landing/in-flight coordinates;
+duration is displayed separately and time is normalized within each observation
+window. Missing target frames are excluded rather than bridged. All 14,108 local
+2023 pass-window plays yielded pre-throw target paths, including the play with
+incomplete in-flight coverage. The legacy 2017 sample has no target-role labels
+and remains unavailable for this atlas.
+
+Next: compare fixed-duration windows, aggregate route/coverage cohorts with sample
+sizes, and establish held-out-game baselines before introducing learned trajectory
+models. The atlas's geometric ranking is descriptive and does not infer assignments.
+
+## Original phase objective
 
 Move Football Motion Lab from opening one exported JSON file at a time to a
 local, searchable library of real NFL Big Data Bowl plays enriched with

@@ -11,12 +11,12 @@ from typing import Any, Iterable
 
 import duckdb
 
-from . import nflverse, pass_window, quality
+from . import nflverse, pass_window, quality, routes
 from .nflverse import EnrichmentReport, JoinCount, JoinCoverage, PbpFile, SeasonCoverage, WeekCoverage
 from .quality import QualityReport
 from .tracking import extract_play, read_lookup, scan_tracking_file
 
-CATALOG_SCHEMA_VERSION = 5
+CATALOG_SCHEMA_VERSION = 6
 TRACKING_FILE_PATTERN = re.compile(r"tracking_week_(\d+)\.csv$")
 LEGACY_TRACKING_FILE_PATTERN = re.compile(r"tracking_gameId_(\d+)\.csv$")
 
@@ -198,10 +198,11 @@ class TrackingCatalog:
                 )
 
             if discovered["source_format"] == pass_window.TRACKING_FORMAT:
-                games, plays, players, tracking_files, assessments = self._pass_window_rows(
+                games, plays, players, tracking_files, assessments, route_rows = self._pass_window_rows(
                     discovered["release"], source_files, warnings
                 )
             else:
+                route_rows = ()
                 games, plays, players, tracking_files, assessments = self._csv_release_rows(
                     discovered, source_files, warnings
                 )
@@ -209,7 +210,7 @@ class TrackingCatalog:
             connection.execute("BEGIN TRANSACTION")
             try:
                 for table in (
-                    "catalog_metadata", "source_files", "tracking_files", "games", "plays", "players", "play_quality"
+                    "catalog_metadata", "source_files", "tracking_files", "games", "plays", "players", "play_quality", "routes"
                 ):
                     connection.execute(f"DELETE FROM {table}")
 
@@ -237,6 +238,8 @@ class TrackingCatalog:
                     [(str(item.path), item.week, item.game_id) for item in tracking_files],
                 )
                 connection.executemany("INSERT INTO play_quality VALUES (?, ?, ?, ?, ?, ?)", assessments)
+                if route_rows:
+                    connection.executemany("INSERT INTO routes VALUES (?, ?, ?, ?, ?, ?, ?)", route_rows)
 
                 metadata = {
                     "schema_version": str(CATALOG_SCHEMA_VERSION),
@@ -347,6 +350,69 @@ class TrackingCatalog:
             page_size=page_size,
             total=total,
         )
+
+    def find_routes(
+        self, *, route: str | None = None, coverage: str | None = None, coverage_type: str | None = None,
+        reference: tuple[str, str] | None = None, page: int = 1, page_size: int = 8,
+    ) -> dict[str, Any]:
+        """Browse indexed target paths or rank by RMS Euclidean distance in yards."""
+        if page < 1 or not 1 <= page_size <= 50:
+            raise ValueError("Route page must be positive and page_size between 1 and 50")
+        connection = self._connect_existing()
+        try:
+            self._require_ready(connection)
+            metadata = self._metadata(connection)
+            supported = metadata.get("source_format") == pass_window.TRACKING_FORMAT
+            base = {
+                "supported": supported, "items": [], "reference": None, "total": 0,
+                "page": page, "pageSize": page_size, "indexed": 0,
+                "catalogPlays": connection.execute("SELECT COUNT(*) FROM plays").fetchone()[0],
+                "routeOptions": [], "coverageOptions": [], "coverageTypeOptions": [],
+            }
+            if not supported:
+                return base
+            if int(metadata.get("schema_version", 0)) < 6:
+                raise CatalogNotFoundError("Route index unavailable. Re-run tracking ingest to build the route atlas.")
+            source = (
+                "FROM routes r JOIN play_quality q USING (game_id, play_id) "
+                "WHERE q.status != 'invalid'"
+            )
+            base["indexed"] = connection.execute(f"SELECT COUNT(*) {source}").fetchone()[0]
+            for key, column in (("routeOptions", "route"), ("coverageOptions", "coverage"),
+                                ("coverageTypeOptions", "coverage_type")):
+                base[key] = [row[0] for row in connection.execute(
+                    f"SELECT DISTINCT r.{column} {source} AND r.{column} IS NOT NULL ORDER BY 1"
+                ).fetchall()]
+            parameters: list[Any] = []
+            for column, value in (("route", route), ("coverage", coverage), ("coverage_type", coverage_type)):
+                if value:
+                    source += f" AND r.{column} = ?"
+                    parameters.append(value)
+            vector = None
+            if reference:
+                row = connection.execute(
+                    "SELECT r.route_json, r.signature FROM routes r JOIN play_quality q USING (game_id, play_id) "
+                    "WHERE r.game_id = ? AND r.play_id = ? AND q.status != 'invalid'", list(reference),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("This play has no comparable route. A unique targeted receiver, known direction, "
+                                     "and uninterrupted pre-throw tracking are required.")
+                base["reference"], vector = json.loads(row[0]), row[1]
+                source += " AND NOT (r.game_id = ? AND r.play_id = ?)"
+                parameters.extend(reference)
+            base["total"] = connection.execute(f"SELECT COUNT(*) {source}", parameters).fetchone()[0]
+            distance = "list_distance(r.signature, ?::DOUBLE[]) / sqrt(?)" if vector is not None else "NULL"
+            distance_parameters = [vector, routes.SAMPLE_COUNT] if vector is not None else []
+            rows = connection.execute(
+                f"SELECT r.route_json, {distance} AS distance {source} "
+                "ORDER BY distance NULLS LAST, r.game_id, TRY_CAST(r.play_id AS BIGINT), r.play_id LIMIT ? OFFSET ?",
+                [*distance_parameters, *parameters, page_size, (page - 1) * page_size],
+            ).fetchall()
+            base["items"] = [{**json.loads(row[0]), "distanceYards": round(row[1], 3) if row[1] is not None else None}
+                             for row in rows]
+            return base
+        finally:
+            connection.close()
 
     def load_play(self, game_id: str | int, play_id: str | int) -> dict[str, Any]:
         game_key, play_key = str(game_id), str(play_id)
@@ -630,6 +696,7 @@ class TrackingCatalog:
             tuple(rows.players),
             tracking_files,
             tuple(self._quality_rows(rows.plays, rows.validations)),
+            tuple(rows.routes),
         )
 
     @staticmethod
@@ -965,6 +1032,16 @@ class TrackingCatalog:
                 errors INTEGER NOT NULL,
                 warnings INTEGER NOT NULL,
                 findings_json VARCHAR NOT NULL,
+                PRIMARY KEY (game_id, play_id)
+            );
+            CREATE TABLE IF NOT EXISTS routes (
+                game_id VARCHAR,
+                play_id VARCHAR,
+                route VARCHAR,
+                coverage VARCHAR,
+                coverage_type VARCHAR,
+                signature DOUBLE[] NOT NULL,
+                route_json VARCHAR NOT NULL,
                 PRIMARY KEY (game_id, play_id)
             );
             CREATE INDEX IF NOT EXISTS plays_offense_idx ON plays(offense);

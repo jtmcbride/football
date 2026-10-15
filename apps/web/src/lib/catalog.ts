@@ -82,7 +82,7 @@ export async function fetchTrackingPlay(gameId: string, playId: string, signal?:
   return fetchJson<TrackingPlay>(`/api/plays/${encodeURIComponent(gameId)}/${encodeURIComponent(playId)}`, signal);
 }
 
-async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+export async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { signal });
   if (response.ok) return await response.json() as T;
 
