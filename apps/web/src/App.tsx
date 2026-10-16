@@ -7,7 +7,7 @@ import { TeamShapePanel } from "./components/TeamShapePanel";
 import { RouteAtlas } from "./components/RouteAtlas";
 import { Timeline } from "./components/Timeline";
 import { FlightLab } from "./components/FlightLab";
-import { flightGhosts } from "./lib/flight";
+import { BASELINE_LABELS, flightGhosts, type FlightBaseline } from "./lib/flight";
 import { fetchTrackingPlay } from "./lib/catalog";
 import { clampFrame, isLinkedTo, parsePlayLink, withPlayLink, withoutPlayLink } from "./lib/playLink";
 import { qualityBadge } from "./lib/provenance";
@@ -68,6 +68,7 @@ export default function App() {
   const [showRoutes, setShowRoutes] = useState(true);
   const [showLanding, setShowLanding] = useState(true);
   const [showGhosts, setShowGhosts] = useState(true);
+  const [flightBaseline, setFlightBaseline] = useState<FlightBaseline>("constant-velocity");
   const [routeSelection, setRouteSelection] = useState<{ owner: TrackingPlay; routes: RoutePath[] } | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -171,7 +172,7 @@ export default function App() {
   }, []);
 
   const shapeSeries = useMemo(() => play ? teamShapeSeries(play) : [], [play]);
-  const ghosts = useMemo(() => play ? flightGhosts(play, frameIndex) : [], [play, frameIndex]);
+  const ghosts = useMemo(() => play ? flightGhosts(play, frameIndex, flightBaseline) : [], [play, frameIndex, flightBaseline]);
   const shapeSnapshot = shapeSeries[frameIndex] ?? null;
   const currentRoute = useMemo(() => play ? observedRoute(play) : null, [play]);
   const routeOverlays = routeSelection?.owner === play ? routeSelection.routes : NO_ROUTES;
@@ -253,6 +254,12 @@ export default function App() {
                 <Toggle label="Routes" checked={showRoutes} onChange={setShowRoutes} />
                 <Toggle label="Landing" checked={showLanding} onChange={setShowLanding} />
                 <Toggle label="Ghosts" checked={showGhosts} onChange={setShowGhosts} />
+                <label className="flight-baseline-select">Ghost baseline
+                  <select aria-label="Ghost baseline" value={flightBaseline}
+                    onChange={(event) => setFlightBaseline(event.target.value as FlightBaseline)}>
+                    {Object.entries(BASELINE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                </label>
               </div>
             </div>
             <FieldReplay
@@ -268,6 +275,7 @@ export default function App() {
               showLanding={showLanding}
               ghosts={ghosts}
               showGhosts={showGhosts}
+              flightBaseline={flightBaseline}
               onSelectEntity={setSelectedEntityId}
               selectedEntityId={selectedEntityId}
             />
@@ -284,6 +292,7 @@ export default function App() {
               onRateChange={setPlaybackRate}
             />
             <FlightLab play={play} frameIndex={frameIndex} ghosts={ghosts}
+              baseline={flightBaseline} onBaselineChange={setFlightBaseline}
               onFrameChange={changeFrame} onSelectEntity={setSelectedEntityId} />
             <PlayerAnalysis
               play={play}

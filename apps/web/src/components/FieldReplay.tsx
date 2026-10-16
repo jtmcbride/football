@@ -3,7 +3,7 @@ import type { TeamShapeSnapshot } from "../lib/teamShape";
 import type { TrackingFrame, TrackingPlay } from "../lib/types";
 import { fieldRoutePoints, overlayDash, routeKey, routeLabel } from "../lib/routes";
 import type { RoutePath } from "../lib/routes";
-import type { Ghost } from "../lib/flight";
+import { BASELINE_LABELS, type FlightBaseline, type Ghost } from "../lib/flight";
 
 const VIEW_WIDTH = 1200;
 const VIEW_HEIGHT = 533;
@@ -22,6 +22,7 @@ interface FieldReplayProps {
   showLanding: boolean;
   ghosts: Ghost[];
   showGhosts: boolean;
+  flightBaseline: FlightBaseline;
   onSelectEntity: (id: string | null) => void;
   selectedEntityId: string | null;
 }
@@ -39,6 +40,7 @@ export const FieldReplay = memo(function FieldReplay({
   showLanding,
   ghosts,
   showGhosts,
+  flightBaseline,
   onSelectEntity,
   selectedEntityId,
 }: FieldReplayProps) {
@@ -125,9 +127,9 @@ export const FieldReplay = memo(function FieldReplay({
           <polyline key={trail.id} points={trail.points} className={`trail ${teamClass(trail.club, play)}`} />
         )) : null}
 
-        {showGhosts ? <g className="flight-ghosts" aria-label="Constant-velocity player projections">
+        {showGhosts ? <g className="flight-ghosts" aria-label={`${BASELINE_LABELS[flightBaseline]} player projections`}>
           {ghosts.map((ghost) => <g key={ghost.state.id} className={selectedEntityId === ghost.state.id ? "selected" : ""}>
-            <title>{ghost.state.name}: constant velocity{ghost.offField ? ", projected off field" : ""}</title>
+            <title>{ghost.state.name}: {BASELINE_LABELS[flightBaseline]}{ghost.offField ? ", projected off field" : ""}</title>
             <line className="ghost-path" x1={ghost.state.x * SCALE} y1={ghost.state.y * SCALE} x2={ghost.x * SCALE} y2={ghost.y * SCALE} />
             {ghost.actual ? <line className="ghost-error" x1={ghost.actual.x * SCALE} y1={ghost.actual.y * SCALE} x2={ghost.x * SCALE} y2={ghost.y * SCALE} /> : null}
             <circle cx={ghost.x * SCALE} cy={ghost.y * SCALE} r="17" />
@@ -199,7 +201,7 @@ export const FieldReplay = memo(function FieldReplay({
         <span><b>{frame.frameId < window.releaseFrameId ? "Pre-throw" : frame.frameId === window.releaseFrameId ? "Release" : frame.frameId === window.arrivalFrameId ? "Arrival boundary" : "In flight"}</b> · boundaries derived</span>
         <a href="#route-atlas">Open route atlas →</a>
         <a href="#flight-lab">Prediction lab →</a>
-        {showGhosts ? <small>Hollow white: constant-velocity ghosts · dashed white: observed position error · ghosts appear at release.</small> : null}
+        {showGhosts ? <small>Hollow white: {BASELINE_LABELS[flightBaseline].toLowerCase()} ghosts · dashed white: observed position error · ghosts appear at release.</small> : null}
         <small>{currentRoute ? "Solid orange: full observed target route · dashed blue: comparison routes aligned at release. " : ""}{showLanding && landing ? "Landing is recorded, not a live ball position. " : ""}Route label applies only to the targeted receiver.</small>
       </div> : null}
       <div className="direction-ribbon" aria-hidden="true">

@@ -6,6 +6,8 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -36,15 +38,17 @@ class FlightGeometryTest(unittest.TestCase):
 
     def test_future_and_outcome_changes_cannot_change_release_state(self):
         play = sample()
-        expected = flight.release_states(play)
+        expected = {baseline: flight.release_states(play, baseline) for baseline in flight.BASELINE_VERSIONS}
         for frame in play["frames"][12:]:
             for entity in frame["entities"]:
                 entity.update(x=999, y=-100, speed=999, direction=47, playerToPredict=False)
         play["play"]["ballLanding"] = {"x": 999, "y": 999}
         play["play"]["passWindow"].update(route="GO", arrivalFrameId=999)
-        self.assertEqual(flight.release_states(play), expected)
+        for baseline in flight.BASELINE_VERSIONS:
+            self.assertEqual(flight.release_states(play, baseline), expected[baseline])
         play["frames"] = play["frames"][:12]
-        self.assertEqual(flight.release_states(play), expected)
+        for baseline in flight.BASELINE_VERSIONS:
+            self.assertEqual(flight.release_states(play, baseline), expected[baseline])
 
     def test_left_right_rotation_preserves_forecast(self):
         rows = input_rows("101", frames=12, direction="left", output_frames=0)
@@ -53,7 +57,78 @@ class FlightGeometryTest(unittest.TestCase):
                        y=str(FIELD_WIDTH - float(row["y"])), dir=str((float(row["dir"]) + 180) % 360))
         right = pass_window.build_play(rows, [], supplementary_row("101", description="pass"),
                                        input_file="input.csv", output_file=None)
-        self.assertEqual(flight.release_states(sample()), flight.release_states(right))
+        for baseline in flight.BASELINE_VERSIONS:
+            self.assertEqual(flight.release_states(sample(), baseline), flight.release_states(right, baseline))
+
+    def test_acceleration_vector_and_known_position_ignore_scalar_acceleration(self):
+        play = sample()
+        release = next(e for e in play["frames"][11]["entities"] if e["id"] == "2")
+        prior = next(e for e in play["frames"][10]["entities"] if e["id"] == "2")
+        release.update(x=10, y=20, speed=5, direction=math.degrees(math.atan2(3, 4)))
+        prior.update(speed=math.hypot(2.8, 4.1), direction=math.degrees(math.atan2(2.8, 4.1)))
+        forecast = flight.release_states(play, flight.ACCELERATION)
+        state = next(s for s in forecast["states"] if s["id"] == "2")
+        self.assertAlmostEqual(state["ax"], 2)
+        self.assertAlmostEqual(state["ay"], -1)
+        x, y = flight.project(state, 2)
+        self.assertAlmostEqual(x, 20)
+        self.assertAlmostEqual(y, 26)
+        for frame in play["frames"][12:]:
+            for entity in frame["entities"]:
+                prediction = next(s for s in forecast["states"] if s["id"] == entity["id"])
+                entity["x"], entity["y"] = flight.project(prediction, (frame["frameId"] - 12) / 10)
+        self.assertTrue(all(error == 0 for _, _, error, _ in flight.measurements(play, forecast)))
+        self.assertTrue(any(error > 0 for _, _, error, _ in flight.measurements(play, flight.release_states(play))))
+        for frame in play["frames"]:
+            for entity in frame["entities"]:
+                entity.update(acceleration=999, orientation=37)
+        self.assertEqual(flight.release_states(play, flight.ACCELERATION), forecast)
+
+    def test_acceleration_handles_braking_turning_and_heading_wrap(self):
+        for current, previous, expected in (
+            ((2, 90), (3, 90), (-10, 0)),
+            ((2, 0), (2, 90), (-20, 20)),
+            ((2, 1), (2, 359), (40 * math.sin(math.radians(1)), 0)),
+        ):
+            play = sample()
+            release = next(e for e in play["frames"][11]["entities"] if e["id"] == "2")
+            prior = next(e for e in play["frames"][10]["entities"] if e["id"] == "2")
+            release.update(speed=current[0], direction=current[1])
+            prior.update(speed=previous[0], direction=previous[1])
+            state = next(s for s in flight.release_states(play, flight.ACCELERATION)["states"] if s["id"] == "2")
+            self.assertAlmostEqual(state["ax"], expected[0])
+            self.assertAlmostEqual(state["ay"], expected[1])
+
+    def test_acceleration_needs_unique_adjacent_velocity_and_never_falls_back(self):
+        for fault in ("frame-gap", "missing-player", "duplicate", "speed", "direction", "cadence"):
+            with self.subTest(fault=fault):
+                play = sample()
+                prior = play["frames"][10]
+                entity = next(e for e in prior["entities"] if e["id"] == "2")
+                if fault == "frame-gap":
+                    play["frames"].remove(prior)
+                elif fault == "missing-player":
+                    prior["entities"].remove(entity)
+                elif fault == "duplicate":
+                    prior["entities"].append(copy.deepcopy(entity))
+                elif fault == "cadence":
+                    prior["timeMs"] -= 100
+                else:
+                    entity[fault] = None
+                cv = flight.release_states(play)
+                ca = flight.release_states(play, flight.ACCELERATION)
+                self.assertIn("2", [s["id"] for s in cv["states"]])
+                self.assertNotIn("2", [s["id"] for s in ca["states"]])
+                self.assertEqual(ca["unavailable"][0]["id"], "2")
+
+    def test_zero_acceleration_reduces_to_velocity(self):
+        play = sample()
+        cv = flight.release_states(play)
+        ca = flight.release_states(play, flight.ACCELERATION)
+        for velocity, acceleration in zip(cv["states"], ca["states"], strict=True):
+            self.assertEqual((acceleration["ax"], acceleration["ay"]), (0, 0))
+            for seconds in (0, 0.1, 1, 10):
+                self.assertEqual(flight.project(velocity, seconds), flight.project(acceleration, seconds))
 
     def test_missing_speed_direction_duplicate_or_missing_release_is_unavailable(self):
         for fault in ("speed", "direction", "duplicate", "missing"):
@@ -96,6 +171,28 @@ class FlightGeometryTest(unittest.TestCase):
 
 
 class FlightEvaluationTest(unittest.TestCase):
+    def test_paired_scores_use_identical_players_and_missing_labels(self):
+        play = sample()
+        play["play"]["gameId"] = "2023090702"
+        # Receiver lacks adjacent input history; coverage player lacks one future label.
+        prior = play["frames"][10]
+        prior["entities"] = [e for e in prior["entities"] if e["id"] != "2"]
+        future = play["frames"][13]
+        future["entities"] = [e for e in future["entities"] if e["id"] != "3"]
+        catalog = SimpleNamespace(pass_flight_source=lambda: (None, "fixture", [GAME_ID, "2023090702"]))
+        with patch("ftbdata.pass_window.iter_plays", return_value=iter([play])):
+            report = flight.evaluate(catalog)
+        comparison = report["comparison"]
+        self.assertEqual(comparison["counts"]["pairedPlayers"], 1)
+        self.assertEqual(comparison["counts"]["velocityOnlyPlayers"], 1)
+        self.assertEqual(report["overall"]["samples"], 9)
+        for scores in comparison["baselines"].values():
+            self.assertEqual(scores["overall"]["samples"], 4)
+            self.assertEqual(scores["overall"]["missingSamples"], 1)
+            self.assertEqual(scores["overall"]["endpoints"], 1)
+            self.assertEqual([role["role"] for role in scores["byRole"]], ["Defensive Coverage"])
+        self.assertEqual(comparison["delta"], {"coordinateRmse": 0, "meanDistance": 0, "finalDistance": 0})
+
     def test_game_split_report_source_guard_and_api(self):
         heldout_id = "2023090702"
         self.assertTrue(flight.held_out(heldout_id))
@@ -126,6 +223,12 @@ class FlightEvaluationTest(unittest.TestCase):
             self.assertEqual(report["overall"]["samples"], 20)
             self.assertEqual([row["gameId"] for row in report["byGame"]], [heldout_id])
             self.assertEqual(report["fittedParameters"], 0)
+            comparison = report["comparison"]
+            self.assertEqual(comparison["counts"]["pairedPlayers"], 4)
+            self.assertEqual(comparison["counts"]["velocityOnlyPlayers"], 0)
+            for key in ("overall", "byHorizon", "byGame", "byRole"):
+                self.assertEqual(comparison["baselines"][flight.VELOCITY][key], comparison["baselines"][flight.ACCELERATION][key])
+                self.assertEqual(comparison["baselines"][flight.VELOCITY][key], report[key])
             # Report matches the same per-play scorer used by the visual forecast.
             play = catalog.load_play(heldout_id, "101")
             score = flight.Scores()
@@ -136,6 +239,11 @@ class FlightEvaluationTest(unittest.TestCase):
             path.write_text(json.dumps(report))
             client = TestClient(create_app(catalog.database_path, flight_report=path))
             self.assertEqual(client.get("/flight-report").status_code, 200)
+            original_version = report["version"]
+            report["version"] = "constant-velocity-v1"
+            path.write_text(json.dumps(report))
+            self.assertEqual(client.get("/flight-report").status_code, 409)
+            report["version"] = original_version
             self.assertEqual(TestClient(create_app(catalog.database_path)).get("/flight-report").status_code, 503)
             report["fingerprint"] = "wrong-source"
             path.write_text(json.dumps(report))

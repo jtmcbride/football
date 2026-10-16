@@ -835,7 +835,15 @@ footer {
 .flight-horizon svg { width: 100%; display: block; }
 .flight-horizon line { stroke: #c4cfd1; stroke-width: 1; }
 .flight-horizon text { font: 11px ui-monospace, monospace; fill: #40565f; }
-.flight-horizon circle { fill: #a93926; }
+.flight-horizon circle { fill: var(--blue-dark); }
+.flight-horizon rect { fill: var(--orange-dark); }
+.flight-score-row h4 { margin-bottom: 8px; font-size: 13px; }
+.flight-score-row.constant-velocity h4 { color: var(--blue-dark); }
+.flight-score-row.constant-acceleration h4 { color: var(--orange-dark); }
+.flight-controls button[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: var(--paper-bright); }
+.flight-baseline-select { display: grid; gap: 4px; font: 10px var(--utility); }
+.flight-baseline-select select { max-width: 100%; padding: 6px; border: 1px solid var(--rule); background: var(--paper-bright); color: var(--ink); }
+.flight-delta { overflow-wrap: anywhere; }
 .flight-horizon figcaption { font-size: 11px; line-height: 1.5; }
 .flight-horizon-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
 @media (max-width: 620px) {

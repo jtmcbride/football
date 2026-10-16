@@ -49,9 +49,12 @@ because direction and the line of scrimmage are inferred from the same ball posi
 
 ## Pass-flight prediction follow-on
 
-The constant-velocity baseline is implemented on top of the route atlas and the
-2026 pass-window adapter. Release position, speed and movement direction define
-the forecast; future labels are accessed only for scoring. The replay shows hollow
+Constant-velocity and constant-acceleration baselines are implemented on top of the
+route atlas and the 2026 pass-window adapter. Release position, speed and movement
+direction define velocity; acceleration is a backward difference of the final two
+input velocity vectors, exactly 0.1 s apart. The source scalar acceleration is unused.
+Missing prior velocity makes acceleration unavailable. Future labels are accessed
+only for scoring. The replay offers a baseline selector and shows hollow
 ghosts, error connectors, per-player displacement errors and linked flight scrubbing.
 Missing motion inputs/labels remain unavailable and projections are never clipped.
 
@@ -66,6 +69,19 @@ Targeted-receiver RMSE is 1.3276 yd; coverage-defender RMSE is 1.7494 yd.
 At 1.0 s RMSE is 1.4717 yd (5,066 samples); at 2.0 s it is 3.8296 yd (999 samples).
 Changing horizon also changes the cohort, so these are not fixed-cohort growth curves.
 
+The paired acceleration comparison uses the same 49 held-out games and all 101,188
+observations, with no missing history in this run. Acceleration scores 1.7609 yd
+coordinate RMSE, 1.1027 yd mean error, and 2.3124 yd final error. Its RMSE difference
+from velocity is +0.1194 yd, despite improved mean and final error. It improves
+per-game RMSE in 23 games and worsens it in 26. At 1.0 s acceleration RMSE is 0.8536 yd
+(5,066 paired samples); at 2.0 s it is 4.3205 yd (999 paired samples). The unbounded
+quadratic extrapolation can overshoot on longer horizons; no damping/caps were tuned
+on the holdout. The UI shows both curves on a shared scale, with paired deltas,
+role summaries, and sample counts. Report version `pass-flight-comparison-v2`
+preserves the original velocity cohort at the top level and records paired metrics
+under `comparison`; regenerate velocity-only reports before serving. The full
+velocity reference, source fingerprint and game lists exactly match the previous run.
+
 Remaining prediction work: compare additional baselines using development games,
 introduce a separate validation split before tuning, and retain the game holdout
 for final comparisons. Any landing-conditioned model must be labeled separately.
@@ -73,7 +89,7 @@ Source participants are selected using eventual throw information, release/arriv
 events are derived, and frame-weighted metrics give longer flights more weight.
 Neither this single-season benchmark nor the 2017 single-game sample establishes
 league-wide or live-game accuracy. The initial phase's predictive-model non-goal
-below remains historical; this separately scoped follow-on introduces only the baseline.
+below remains historical; this separately scoped follow-on introduces these baselines.
 
 ## Route atlas follow-on
 

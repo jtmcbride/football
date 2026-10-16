@@ -82,7 +82,7 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--flight-report", type=Path, help="Held-out evaluation JSON to show in the prediction lab")
-    evaluate = commands.add_parser("evaluate-flight", help="Measure constant velocity on a fixed game holdout")
+    evaluate = commands.add_parser("evaluate-flight", help="Compare motion baselines on a fixed game holdout")
     evaluate.add_argument("--database", type=Path, required=True)
     evaluate.add_argument("--output", type=Path, required=True)
     return root
@@ -104,7 +104,10 @@ def main(argv: list[str] | None = None) -> int:
             report = evaluate(TrackingCatalog(args.database))
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-            print(json.dumps({"output": str(args.output), "counts": report["counts"], "overall": report["overall"]}, indent=2))
+            print(json.dumps({"output": str(args.output), "counts": report["counts"], "overall": report["overall"],
+                              "comparison": {"counts": report["comparison"]["counts"],
+                                             "baselines": {key: value["overall"] for key, value in report["comparison"]["baselines"].items()},
+                                             "delta": report["comparison"]["delta"]}}, indent=2))
             return 0
         if args.command == "ingest":
             catalog = TrackingCatalog(args.database)

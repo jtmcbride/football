@@ -268,8 +268,9 @@ integration surface.
 4. Train only after establishing season/game splits that prevent play-family and team leakage.
 ## Pass-flight prediction lab
 
-Pass-window plays now include a constant-velocity forecast for the source-selected
-prediction participants. Turn on **Ghosts** above the replay: hollow white markers
+Pass-window plays include constant-velocity and constant-acceleration forecasts for
+the source-selected prediction participants. Choose **Ghost baseline** and turn on
+**Ghosts** above the replay: hollow white markers
 show projected positions, and dashed connectors show error against observed positions.
 The prediction lab shares the replay playhead, supports release/arrival jumps and
 keyboard scrubbing, and exposes per-player errors and missing-input states.
@@ -277,13 +278,14 @@ keyboard scrubbing, and exposes per-player errors and missing-input states.
 Generate the reproducible game-held-out benchmark and serve it with the catalog:
 
 ```bash
-uv run football evaluate-flight --database data/db/bdb-2026.duckdb --output data/exports/pass-flight-report.json
-uv run football serve --database data/db/bdb-2026.duckdb --flight-report data/exports/pass-flight-report.json
+uv run football evaluate-flight --database data/db/bdb-2026.duckdb --output data/exports/pass-flight-comparison.json
+uv run football serve --database data/db/bdb-2026.duckdb --flight-report data/exports/pass-flight-comparison.json
 make dev
 ```
 
 No re-ingest is needed for a current schema-6 catalog. Older JSON exports need to be
-re-exported to include release states. Evaluation verifies source contents against
+re-exported to include acceleration states. Regenerate older velocity-only reports;
+the comparison uses report version `pass-flight-comparison-v2`. Evaluation verifies source contents against
 the catalog fingerprint; the API rejects reports from another catalog or baseline
 version. Without `--flight-report`, replay ghosts still work and the benchmark shows
 an explicit unavailable state. The full report is available at `/flight-report`
@@ -291,13 +293,35 @@ an explicit unavailable state. The full report is available at `/flight-report`
 
 On the local 2026 release (2023 season), the fixed split assigns 49 games to holdout
 and 223 to development. **2,511 held-out plays / 8,261 player trajectories / 101,188
-player-frames** score **1.6414 yd coordinate RMSE, 1.4201 yd mean displacement error,
-and 2.7236 yd final displacement error**. No held-out plays, release inputs, or labels
-were excluded/missing in this run. The JSON includes the exact game lists, source
-fingerprint, per-game/per-role/per-horizon metrics, sample counts, and exclusions.
+player-frames** are scored on identical observations for both baselines:
 
-This is an unfitted baseline: `vx = speed × sin(dir)`, `vy = speed × cos(dir)` at
-the last input frame, then position advances at that frozen velocity. The game split
+- Constant velocity: **1.6414 yd coordinate RMSE, 1.4201 yd mean displacement error,
+  2.7236 yd final displacement error**.
+- Constant acceleration: **1.7609 yd coordinate RMSE, 1.1027 yd mean displacement
+  error, 2.3124 yd final displacement error**.
+
+Acceleration improves mean and final error, but worsens aggregate RMSE by 0.1194 yd.
+It improves per-game RMSE in 23 games and worsens it in 26. At 1.0 s, paired RMSE is
+0.8536 yd versus velocity's 1.4717 yd (5,066 samples); at 2.0 s it is 4.3205 versus
+3.8296 yd (999 samples). The unchanged velocity reference exactly reproduces the
+original report. No holdout plays, release inputs, or labels were excluded/missing.
+The JSON records both versions, exact game lists, source fingerprint, per-game,
+per-role and per-horizon metrics, paired deltas, and exclusions. Its top-level
+velocity scores preserve the original cohort; `comparison.baselines` uses the
+intersection of available players for a fair comparison if history is missing.
+
+Both baselines are unfitted. Velocity is `v = (speed × sin(dir), speed × cos(dir))`
+at the last input frame. Constant velocity uses `p(t) = p0 + v*t`. Constant acceleration
+uses `p(t) = p0 + v*t + 0.5*a*t²`, with vector `a = (v_release - v_previous) / 0.1`.
+The two input velocity observations must be unique and exactly 0.1 s apart; missing
+history leaves acceleration unavailable and never falls back to velocity. This is
+a backward difference in field coordinates, including turning and deceleration;
+the source's scalar `a` and body orientation are unused. The
+[official schema](https://www.kaggle.com/competitions/nfl-big-data-bowl-2026-analytics/data)
+documents speed, scalar acceleration, and movement bearing as separate fields.
+Acceleration is frozen without damping, speed caps, or a stopping rule; it can
+reverse direction and overshoot on longer flights. No parameters were tuned on
+the holdout. The game split
 uses the first eight hex digits of SHA-256 of `pass-flight-v1:<gameId>`, modulo 5;
 bucket zero is held out. Neither landing point nor output positions nor flight
 duration enter the predictor. Output length defines the evaluation window only.
@@ -309,5 +333,5 @@ and off-field forecasts are not clipped. Release/arrival boundaries are derived.
 Dataset participant selection itself uses future throw information, so these scores
 describe the selected receivers and defenders in this release, not all NFL players
 or live-game performance. The 2017 sample lacks these prediction-participant labels
-and remains unavailable for this lab. Acceleration, learned models, landing-conditioned
+and remains unavailable for this lab. Learned models, landing-conditioned
 forecasts, and uncertainty estimation are future work.

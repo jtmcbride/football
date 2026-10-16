@@ -283,6 +283,7 @@ def build_play(
         files.append(output_file)
     play["provenance"]["files"] = files
     play["flightForecast"] = flight.release_states(play)
+    play["accelerationForecast"] = flight.release_states(play, flight.ACCELERATION)
     return play
 
 

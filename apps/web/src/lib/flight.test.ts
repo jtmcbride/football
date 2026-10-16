@@ -57,4 +57,28 @@ describe("pass-flight ghosts", () => {
     delete play.flightForecast;
     expect(flightGhosts(play, 3)).toEqual([]);
   });
+
+  it("projects constant acceleration with the half-time-squared term and switches baselines", () => {
+    const play = fixture();
+    play.accelerationForecast = { ...play.flightForecast!, states: [
+      { ...play.flightForecast!.states[0], ax: 2, ay: -4 },
+    ] };
+    expect(flightGhosts(play, 2, "constant-acceleration")[0]).toMatchObject({ x: 31.75, y: 21.5 });
+    expect(flightGhosts(play, 3, "constant-acceleration")[0]).toMatchObject({ x: 34, y: 22 });
+    expect(flightGhosts(play, 3, "constant-velocity")[0]).toMatchObject({ x: 33, y: 24 });
+    play.frames[3].entities[0].x = 90;
+    play.play.ballLanding = { x: 100, y: 10 };
+    expect(flightGhosts(play, 3, "constant-acceleration")[0]).toMatchObject({ x: 34, y: 22 });
+    expect(play.accelerationForecast.states[0].x).toBe(30);
+  });
+
+  it("keeps missing acceleration unavailable and never substitutes a velocity forecast", () => {
+    const play = fixture();
+    expect(flightGhosts(play, 3, "constant-acceleration")).toEqual([]);
+    play.accelerationForecast = { ...play.flightForecast! };
+    expect(flightGhosts(play, 3, "constant-acceleration")).toEqual([]);
+    play.accelerationForecast = { ...play.flightForecast!, reason: "History missing" };
+    expect(flightGhosts(play, 3, "constant-acceleration")).toEqual([]);
+    expect(flightGhosts(play, 3, "constant-velocity")).toHaveLength(1);
+  });
 });
