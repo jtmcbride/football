@@ -49,7 +49,7 @@ because direction and the line of scrimmage are inferred from the same ball posi
 
 ## Pass-flight prediction follow-on
 
-Constant-velocity and constant-acceleration baselines are implemented on top of the
+Constant-velocity, constant-acceleration, and damped-acceleration baselines are implemented on top of the
 route atlas and the 2026 pass-window adapter. Release position, speed and movement
 direction define velocity; acceleration is a backward difference of the final two
 input velocity vectors, exactly 0.1 s apart. The source scalar acceleration is unused.
@@ -61,7 +61,7 @@ Missing motion inputs/labels remain unavailable and projections are never clippe
 `football evaluate-flight` verifies source bytes against the catalog, uses a fixed
 SHA-256 game split (bucket zero of five), and writes a versioned JSON report with
 exact game lists, fingerprint, exclusions, and metrics by game, role and 0.1-second
-horizon. No parameters are fitted. In the current 2023-season release, 49 held-out
+horizon. The two undamped baselines have no fitted parameters. In the current 2023-season release, 49 held-out
 games produce 2,511 plays, 8,261 trajectories and 101,188 observed player-frames:
 coordinate RMSE 1.6414 yd, mean Euclidean error 1.4201 yd, final error 2.7236 yd.
 All holdout inputs and labels were available; 223 games remain in development.
@@ -76,14 +76,32 @@ from velocity is +0.1194 yd, despite improved mean and final error. It improves
 per-game RMSE in 23 games and worsens it in 26. At 1.0 s acceleration RMSE is 0.8536 yd
 (5,066 paired samples); at 2.0 s it is 4.3205 yd (999 paired samples). The unbounded
 quadratic extrapolation can overshoot on longer horizons; no damping/caps were tuned
-on the holdout. The UI shows both curves on a shared scale, with paired deltas,
-role summaries, and sample counts. Report version `pass-flight-comparison-v2`
+on the holdout. The UI shows all curves on a shared scale, with paired deltas,
+role summaries, and sample counts. Report version `pass-flight-comparison-v3`
 preserves the original velocity cohort at the top level and records paired metrics
-under `comparison`; regenerate velocity-only reports before serving. The full
+under `comparison`; regenerate older reports before serving. The full
 velocity reference, source fingerprint and game lists exactly match the previous run.
 
+Damped acceleration adds exponential decay `a(t)=a0*exp(-λ*t)` and its exact position
+integral. λ is selected from the fixed grid 0, 0.25, 0.5, 1, 2, 4, 8 s⁻¹, minimizing
+pooled coordinate RMSE on development games only; smallest λ breaks exact ties.
+All 223 development games yield 11,597 scored plays / 461,748 player-frames. λ = 2 s⁻¹
+wins with development RMSE 1.3818 yd and acceleration half-life 0.3466 s. These are
+in-sample tuning scores. Selection finishes before held-out scoring begins.
+The report's `tuning` block records all candidates, game IDs, source fingerprint,
+and the selected parameter. An outcome-mutation test verifies that changing held-out
+labels cannot change the selected rate. The API rejects mismatched tuning artifacts;
+damped ghosts require a matching report and have no hardcoded rate fallback.
+
+On the same 49 held-out games / 101,188 matched player-frames, damping scores
+1.2214 yd RMSE, 0.9131 yd mean error, and 1.8563 yd final error. It improves per-game
+RMSE versus velocity in all 49 games. At 1.0 s its RMSE is 0.8868 yd (5,066 samples);
+at 2.0 s it is 2.9863 yd (999 samples). The two prior baselines and exact split lists
+reproduce unchanged. This is a repeated benchmark whose prior results were inspected,
+not a fresh blind evaluation. No held-out labels were used to select λ.
+
 Remaining prediction work: compare additional baselines using development games,
-introduce a separate validation split before tuning, and retain the game holdout
+introduce a separate validation split for more extensive tuning, and retain the game holdout
 for final comparisons. Any landing-conditioned model must be labeled separately.
 Source participants are selected using eventual throw information, release/arrival
 events are derived, and frame-weighted metrics give longer flights more weight.

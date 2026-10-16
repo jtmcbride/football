@@ -266,9 +266,10 @@ integration surface.
 2. Aggregate route/coverage patterns with sample sizes, then evaluate trajectory prediction on held-out games.
 3. Ingest nflverse participation data for formation and personnel in seasons that lack them.
 4. Train only after establishing season/game splits that prevent play-family and team leakage.
+
 ## Pass-flight prediction lab
 
-Pass-window plays include constant-velocity and constant-acceleration forecasts for
+Pass-window plays support constant velocity, constant acceleration, and tuned damped acceleration for
 the source-selected prediction participants. Choose **Ghost baseline** and turn on
 **Ghosts** above the replay: hollow white markers
 show projected positions, and dashed connectors show error against observed positions.
@@ -278,39 +279,58 @@ keyboard scrubbing, and exposes per-player errors and missing-input states.
 Generate the reproducible game-held-out benchmark and serve it with the catalog:
 
 ```bash
-uv run football evaluate-flight --database data/db/bdb-2026.duckdb --output data/exports/pass-flight-comparison.json
-uv run football serve --database data/db/bdb-2026.duckdb --flight-report data/exports/pass-flight-comparison.json
+uv run football evaluate-flight --database data/db/bdb-2026.duckdb --output data/exports/pass-flight-damped.json
+uv run football serve --database data/db/bdb-2026.duckdb --flight-report data/exports/pass-flight-damped.json
 make dev
 ```
 
 No re-ingest is needed for a current schema-6 catalog. Older JSON exports need to be
-re-exported to include acceleration states. Regenerate older velocity-only reports;
-the comparison uses report version `pass-flight-comparison-v2`. Evaluation verifies source contents against
+re-exported to include acceleration states. Damped ghosts additionally require the
+matching report's tuned rate; missing/mismatched tuning stays unavailable.
+Regenerate older reports: the comparison now uses `pass-flight-comparison-v3`.
+Evaluation verifies source contents against
 the catalog fingerprint; the API rejects reports from another catalog or baseline
-version. Without `--flight-report`, replay ghosts still work and the benchmark shows
+version and verifies the tuning game IDs, rate, and source fingerprint. Without
+`--flight-report`, the two untuned ghost baselines still work and the benchmark shows
 an explicit unavailable state. The full report is available at `/flight-report`
 (`/api/flight-report` through the development server).
 
 On the local 2026 release (2023 season), the fixed split assigns 49 games to holdout
 and 223 to development. **2,511 held-out plays / 8,261 player trajectories / 101,188
-player-frames** are scored on identical observations for both baselines:
+player-frames** are scored on identical observations for all three baselines:
 
 - Constant velocity: **1.6414 yd coordinate RMSE, 1.4201 yd mean displacement error,
   2.7236 yd final displacement error**.
 - Constant acceleration: **1.7609 yd coordinate RMSE, 1.1027 yd mean displacement
   error, 2.3124 yd final displacement error**.
+- Damped acceleration: **1.2214 yd coordinate RMSE, 0.9131 yd mean displacement
+  error, 1.8563 yd final displacement error**.
+
+The damping rate is selected before held-out scoring, using only the 223
+development games (11,597 plays / 461,748 player-frames). The fixed candidate grid
+is **0, 0.25, 0.5, 1, 2, 4, 8 s⁻¹**, ranked by pooled development coordinate RMSE;
+the smallest rate wins exact ties. The selected **λ = 2 s⁻¹** has an acceleration
+half-life of **0.3466 s** and development RMSE **1.3818 yd**. These are tuning scores,
+not validation scores. The report records every candidate's scores, exact tuning
+game list, source fingerprint, and selected parameter; none are selected on held-out
+labels. Tests change held-out outcomes and verify the selected rate is unchanged.
+
+Damping improves held-out per-game RMSE in all 49 games versus velocity. It improves
+overall RMSE by 0.4200 yd versus velocity and 0.5394 yd versus acceleration. It does
+not win at every horizon: at 1.0 s its RMSE is 0.8868 yd versus acceleration's 0.8536;
+at 2.0 s it scores 2.9863 versus acceleration's 4.3205 yd on the same 999 samples.
 
 Acceleration improves mean and final error, but worsens aggregate RMSE by 0.1194 yd.
 It improves per-game RMSE in 23 games and worsens it in 26. At 1.0 s, paired RMSE is
 0.8536 yd versus velocity's 1.4717 yd (5,066 samples); at 2.0 s it is 4.3205 versus
 3.8296 yd (999 samples). The unchanged velocity reference exactly reproduces the
 original report. No holdout plays, release inputs, or labels were excluded/missing.
-The JSON records both versions, exact game lists, source fingerprint, per-game,
+The JSON records all three baseline versions, exact game lists, source fingerprint, per-game,
 per-role and per-horizon metrics, paired deltas, and exclusions. Its top-level
 velocity scores preserve the original cohort; `comparison.baselines` uses the
 intersection of available players for a fair comparison if history is missing.
 
-Both baselines are unfitted. Velocity is `v = (speed × sin(dir), speed × cos(dir))`
+The two undamped baselines are unfitted. Velocity is `v = (speed × sin(dir), speed × cos(dir))`
 at the last input frame. Constant velocity uses `p(t) = p0 + v*t`. Constant acceleration
 uses `p(t) = p0 + v*t + 0.5*a*t²`, with vector `a = (v_release - v_previous) / 0.1`.
 The two input velocity observations must be unique and exactly 0.1 s apart; missing
@@ -320,8 +340,12 @@ the source's scalar `a` and body orientation are unused. The
 [official schema](https://www.kaggle.com/competitions/nfl-big-data-bowl-2026-analytics/data)
 documents speed, scalar acceleration, and movement bearing as separate fields.
 Acceleration is frozen without damping, speed caps, or a stopping rule; it can
-reverse direction and overshoot on longer flights. No parameters were tuned on
-the holdout. The game split
+reverse direction and overshoot on longer flights. Damped acceleration uses
+`a(t) = a0 * exp(-λ*t)` and its exact position integral:
+`p(t) = p0 + v*t + a0 * (λ*t + expm1(-λ*t)) / λ²`.
+At λ = 0 this reduces to constant acceleration; a series expansion preserves
+numerical accuracy near zero. Velocity itself is not damped. No parameters were
+tuned on the holdout. The game split
 uses the first eight hex digits of SHA-256 of `pass-flight-v1:<gameId>`, modulo 5;
 bucket zero is held out. Neither landing point nor output positions nor flight
 duration enter the predictor. Output length defines the evaluation window only.
@@ -329,6 +353,8 @@ Coordinate RMSE divides total squared Euclidean error by twice the observed
 player-frame count. Mean displacement error is frame-weighted; final error uses
 available labels at the play's last output frame. Missing labels are not interpolated,
 and off-field forecasts are not clipped. Release/arrival boundaries are derived.
+This fixed holdout has been inspected in previous baseline comparisons; it is a
+repeated benchmark rather than a fresh blind test.
 
 Dataset participant selection itself uses future throw information, so these scores
 describe the selected receivers and defenders in this release, not all NFL players

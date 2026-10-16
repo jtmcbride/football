@@ -1,25 +1,14 @@
-import { memo, useEffect, useState } from "react";
-import { fetchJson } from "../lib/catalog";
+import { memo } from "react";
 import { BASELINE_LABELS, forecastFor, yards, type FlightBaseline, type FlightReport, type Ghost } from "../lib/flight";
 import type { TrackingPlay } from "../lib/types";
 
-export const FlightLab = memo(function FlightLab({ play, frameIndex, ghosts, baseline, onBaselineChange, onFrameChange, onSelectEntity }: {
+export const FlightLab = memo(function FlightLab({ play, frameIndex, ghosts, baseline, report, error, dampingRate, onBaselineChange, onFrameChange, onSelectEntity }: {
   play: TrackingPlay; frameIndex: number; ghosts: Ghost[];
   baseline: FlightBaseline; onBaselineChange: (baseline: FlightBaseline) => void;
+  report: FlightReport | null; error: string | null; dampingRate: number | undefined;
   onFrameChange: (index: number) => void; onSelectEntity: (id: string) => void;
 }) {
-  const [report, setReport] = useState<FlightReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    const controller = new AbortController();
-    fetchJson<FlightReport>("/api/flight-report", controller.signal).then((next) => {
-      if (!controller.signal.aborted) { setReport(next); setError(null); }
-    }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Evaluation unavailable.");
-    });
-    return () => controller.abort();
-  }, []);
-  const forecast = forecastFor(play, baseline);
+  const forecast = forecastFor(play, baseline, dampingRate);
   const release = play.frames.findIndex((frame) => frame.frameId === forecast?.releaseFrameId);
   const arrival = play.frames.findIndex((frame) => frame.frameId === play.play.passWindow?.arrivalFrameId);
   const seconds = release >= 0 ? (play.frames[frameIndex].frameId - play.frames[release].frameId) / 10 : null;
@@ -35,7 +24,7 @@ export const FlightLab = memo(function FlightLab({ play, frameIndex, ghosts, bas
       {Object.entries(BASELINE_LABELS).map(([value, label]) => <button key={value} type="button"
         aria-pressed={baseline === value} onClick={() => onBaselineChange(value as FlightBaseline)}>{label}</button>)}
     </div>
-    {!forecast || forecast.reason ? <p className="flight-unavailable">{forecast?.reason ?? "Forecast unavailable in this export. Open a pass-window play from the local catalog."}</p> : <>
+    {!forecast || forecast.reason ? <p className="flight-unavailable">{forecast?.reason ?? (baseline === "damped-acceleration" ? "Damped ghosts require acceleration inputs and a matching development-tuning report. Run evaluate-flight and serve its report." : "Forecast unavailable in this export. Open a pass-window play from the local catalog.")}</p> : <>
       <div className="flight-controls">
         <button type="button" onClick={() => onFrameChange(release)} disabled={release < 0}>Jump to release</button>
         <button type="button" onClick={() => onFrameChange(arrival)} disabled={arrival < 0}>Jump to arrival</button>
@@ -56,14 +45,15 @@ export const FlightLab = memo(function FlightLab({ play, frameIndex, ghosts, bas
     <details><summary>Forecast inputs and measurement definitions</summary>
       <p>At the final input frame, velocity is v = (s sin(dir), s cos(dir)). Constant velocity uses p(t) = p₀ + vt. Constant acceleration uses p(t) = p₀ + vt + ½at², where a = (v at release − v one frame earlier) / 0.1 s. Both velocity observations must be unique and exactly 0.1 s apart; missing speed/direction or history makes acceleration unavailable.</p>
       <p>Acceleration is a vector estimated from pre-throw speed and movement direction. The source’s scalar acceleration and body orientation are unused. Direction is clockwise from +y; positions and vectors rotate together for leftward plays. Acceleration stays fixed in field coordinates without damping or speed caps, so forecasts can reverse or overshoot.</p>
+      <p>Damped acceleration uses a(t) = a₀ exp(−λt), integrated to p(t) = p₀ + v₀t + a₀[λt + exp(−λt) − 1]/λ². With λ = 0 it equals constant acceleration. Acceleration decays; velocity itself is not damped. The rate is selected on development games and frozen for held-out evaluation.</p>
       <p>Time is source frame offset / 10, from derived release through the last observed output frame. Landing position, route labels, future positions, and flight duration are not forecast inputs. Forecasts continue through missing observations; errors stay unavailable there. Off-field projections are not clipped.</p>
       <p>Coordinate RMSE averages squared x and y errors separately before taking the square root. Mean distance averages Euclidean errors per observed player-frame; final distance averages available errors at the play’s last output frame. These are yards. Longer flights carry more weight in frame-level scores.</p>
     </details>
     <div className="flight-benchmark">
       <p className="eyebrow">HELD-OUT GAME BENCHMARK</p>
       {error ? <p>{error}</p> : !report ? <p>Loading measurements…</p> : <>
-        <p>{report.heldOutGames.length} held-out games · {report.developmentGames.length} development games · {(report.comparison.counts.scoredPlays ?? 0).toLocaleString()} paired plays · {report.comparison.baselines["constant-velocity"].overall.samples.toLocaleString()} matching player-frames. No fitted parameters.</p>
-        <p>Both baselines use identical players, frames, and observed labels. {(report.comparison.counts.velocityOnlyPlayers ?? 0).toLocaleString()} velocity-only trajectories are excluded from this paired comparison; their original velocity scores remain in the JSON reference.</p>
+        <p>{report.heldOutGames.length} held-out games · {report.developmentGames.length} development games · {(report.comparison.counts.scoredPlays ?? 0).toLocaleString()} paired plays · {report.comparison.baselines["constant-velocity"].overall.samples.toLocaleString()} matching player-frames. One damping parameter tuned on development games.</p>
+        <p>All three baselines use identical players, frames, and observed labels. {(report.comparison.counts.velocityOnlyPlayers ?? 0).toLocaleString()} velocity-only trajectories are excluded from this paired comparison; their original velocity scores remain in the JSON reference.</p>
         {(Object.keys(BASELINE_LABELS) as FlightBaseline[]).map((key) => {
           const scores = report.comparison.baselines[key].overall;
           return <div className={`flight-score-row ${key}`} key={key}>
@@ -76,6 +66,15 @@ export const FlightLab = memo(function FlightLab({ play, frameIndex, ghosts, bas
         })}
         <p className="flight-delta">Acceleration − velocity: RMSE {signedYards(report.comparison.delta.coordinateRmse)} · mean {signedYards(report.comparison.delta.meanDistance)} · final {signedYards(report.comparison.delta.finalDistance)}. Negative favors acceleration.</p>
         <p>Per-game RMSE: acceleration improves {report.comparison.gameResults.improved ?? 0}, worsens {report.comparison.gameResults.worse ?? 0}, ties {report.comparison.gameResults.tied ?? 0} games.</p>
+        <p className="flight-delta">Damped − velocity: RMSE {signedYards(report.comparison.dampedDelta.coordinateRmse)} · mean {signedYards(report.comparison.dampedDelta.meanDistance)} · final {signedYards(report.comparison.dampedDelta.finalDistance)}. Negative favors damping.</p>
+        <p>Per-game RMSE: damped acceleration improves {report.comparison.dampedGameResults.improved ?? 0}, worsens {report.comparison.dampedGameResults.worse ?? 0}, ties {report.comparison.dampedGameResults.tied ?? 0} games.</p>
+        <p>Selected λ = {report.tuning.selectedRate.toFixed(2)} s⁻¹ · acceleration half-life {report.tuning.halfLifeSeconds === null ? "infinite (no decay)" : `${report.tuning.halfLifeSeconds.toFixed(3)} s`}. Selected using {report.tuning.gameIds.length} development games; held-out games were excluded from selection.</p>
+        <details><summary>Development tuning candidates</summary>
+          <p>{report.tuning.objective}. These are in-sample development scores, not held-out results.</p>
+          {report.tuning.candidates.map((candidate) => <p key={candidate.rate}>λ {candidate.rate.toFixed(2)} s⁻¹ · coordinate RMSE {yards(candidate.coordinateRmse)} · n={candidate.samples.toLocaleString()}{candidate.rate === report.tuning.selectedRate ? " · selected" : ""}</p>)}
+          <p>{(report.tuning.counts.scoredPlays ?? 0).toLocaleString()} scored development plays; {(report.tuning.counts.unavailablePlayers ?? 0).toLocaleString()} unavailable input trajectories.</p>
+          {Object.entries(report.tuning.skippedPlays).map(([reason, count]) => <p key={reason}>{reason}: {count} development plays</p>)}
+        </details>
         <HorizonPlot report={report} />
         <details><summary>Coverage, split, and source limitations</summary>
           <p>{report.overall.missingSamples.toLocaleString()} missing player-frames; {(report.counts.unavailablePlayers ?? 0).toLocaleString()} players without usable release inputs; {Object.values(report.skippedPlays).reduce((sum, n) => sum + n, 0)} excluded plays.</p>
@@ -94,10 +93,11 @@ export const FlightLab = memo(function FlightLab({ play, frameIndex, ghosts, bas
   </section>;
 });
 
-function HorizonPlot({ report }: { report: FlightReport }) {
+const HorizonPlot = memo(function HorizonPlot({ report }: { report: FlightReport }) {
   const velocity = report.comparison.baselines["constant-velocity"].byHorizon;
   const acceleration = report.comparison.baselines["constant-acceleration"].byHorizon;
-  const points = [...velocity, ...acceleration].filter((row) => row.coordinateRmse !== null);
+  const damped = report.comparison.baselines["damped-acceleration"].byHorizon;
+  const points = [...velocity, ...acceleration, ...damped].filter((row) => row.coordinateRmse !== null);
   if (!points.length) return <p>No paired scored horizons.</p>;
   const maxX = Math.max(0.1, ...points.map((point) => point.seconds));
   const maxY = Math.max(1, ...points.map((point) => point.coordinateRmse!));
@@ -116,11 +116,17 @@ function HorizonPlot({ report }: { report: FlightReport }) {
       y={147 - point.coordinateRmse! / maxY * 120} width="6" height="6">
       <title>Acceleration · {point.seconds.toFixed(1)} s: {yards(point.coordinateRmse)} · {point.samples.toLocaleString()} player-frames</title>
     </rect>)}
-  </svg><figcaption>Blue circles: velocity · orange squares: acceleration. Paired error by horizon; later points contain only longer flights. Hover for sample counts.</figcaption>
+    {damped.filter((point) => point.coordinateRmse !== null).map((point) => {
+      const x = 55 + point.seconds / maxX * 625, y = 150 - point.coordinateRmse! / maxY * 120;
+      return <path key={point.seconds} d={`M ${x} ${y - 4} L ${x + 4} ${y} L ${x} ${y + 4} L ${x - 4} ${y} Z`}>
+        <title>Damped · {point.seconds.toFixed(1)} s: {yards(point.coordinateRmse)} · {point.samples.toLocaleString()} player-frames</title>
+      </path>;
+    })}
+  </svg><figcaption>Blue circles: velocity · orange squares: acceleration · green diamonds: damped. Paired error by horizon; later points contain only longer flights. Hover for sample counts.</figcaption>
   <details><summary>Horizon values and sample counts</summary><div className="flight-horizon-values">
-    {velocity.map((point) => <p key={point.seconds}>{point.seconds.toFixed(1)} s · velocity {yards(point.coordinateRmse)} · acceleration {yards(acceleration.find((row) => row.seconds === point.seconds)?.coordinateRmse)} · n={point.samples.toLocaleString()}</p>)}
+    {velocity.map((point) => <p key={point.seconds}>{point.seconds.toFixed(1)} s · velocity {yards(point.coordinateRmse)} · acceleration {yards(acceleration.find((row) => row.seconds === point.seconds)?.coordinateRmse)} · damped {yards(damped.find((row) => row.seconds === point.seconds)?.coordinateRmse)} · n={point.samples.toLocaleString()}</p>)}
   </div></details></figure>;
-}
+});
 
 function signedYards(value: number | null): string {
   return value == null ? "Unavailable" : `${value > 0 ? "+" : ""}${value.toFixed(2)} yd`;

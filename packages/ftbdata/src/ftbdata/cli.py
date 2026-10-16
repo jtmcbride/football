@@ -107,7 +107,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"output": str(args.output), "counts": report["counts"], "overall": report["overall"],
                               "comparison": {"counts": report["comparison"]["counts"],
                                              "baselines": {key: value["overall"] for key, value in report["comparison"]["baselines"].items()},
-                                             "delta": report["comparison"]["delta"]}}, indent=2))
+                                             "delta": report["comparison"]["delta"],
+                                             "dampedDelta": report["comparison"]["dampedDelta"]},
+                              "selectedDampingRate": report["tuning"]["selectedRate"]}, indent=2))
             return 0
         if args.command == "ingest":
             catalog = TrackingCatalog(args.database)

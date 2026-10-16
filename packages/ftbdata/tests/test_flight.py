@@ -38,17 +38,17 @@ class FlightGeometryTest(unittest.TestCase):
 
     def test_future_and_outcome_changes_cannot_change_release_state(self):
         play = sample()
-        expected = {baseline: flight.release_states(play, baseline) for baseline in flight.BASELINE_VERSIONS}
+        expected = {baseline: flight.release_states(play, baseline, damping_rate=2) for baseline in flight.BASELINE_VERSIONS}
         for frame in play["frames"][12:]:
             for entity in frame["entities"]:
                 entity.update(x=999, y=-100, speed=999, direction=47, playerToPredict=False)
         play["play"]["ballLanding"] = {"x": 999, "y": 999}
         play["play"]["passWindow"].update(route="GO", arrivalFrameId=999)
         for baseline in flight.BASELINE_VERSIONS:
-            self.assertEqual(flight.release_states(play, baseline), expected[baseline])
+            self.assertEqual(flight.release_states(play, baseline, damping_rate=2), expected[baseline])
         play["frames"] = play["frames"][:12]
         for baseline in flight.BASELINE_VERSIONS:
-            self.assertEqual(flight.release_states(play, baseline), expected[baseline])
+            self.assertEqual(flight.release_states(play, baseline, damping_rate=2), expected[baseline])
 
     def test_left_right_rotation_preserves_forecast(self):
         rows = input_rows("101", frames=12, direction="left", output_frames=0)
@@ -58,7 +58,26 @@ class FlightGeometryTest(unittest.TestCase):
         right = pass_window.build_play(rows, [], supplementary_row("101", description="pass"),
                                        input_file="input.csv", output_file=None)
         for baseline in flight.BASELINE_VERSIONS:
-            self.assertEqual(flight.release_states(sample(), baseline), flight.release_states(right, baseline))
+            self.assertEqual(flight.release_states(sample(), baseline, damping_rate=2), flight.release_states(right, baseline, damping_rate=2))
+
+    def test_damped_integral_limits_and_known_geometry(self):
+        # a(t)=2*exp(-t) integrates to 2*(t - 1 + exp(-t)) displacement.
+        state = {"x": 10, "y": 20, "vx": 3, "vy": -2, "ax": 2, "ay": -4}
+        x, y = flight.project(state, 2, 1)
+        self.assertAlmostEqual(x, 16 + 2 * (1 + math.exp(-2)))
+        self.assertAlmostEqual(y, 16 - 4 * (1 + math.exp(-2)))
+        self.assertEqual(flight.project(state, 0, 1), (10, 20))
+        self.assertEqual(flight.project(state, 2, 0), flight.project(state, 2))
+        for seconds in (0.1, 1, 10):
+            self.assertAlmostEqual(flight.acceleration_weight(seconds, 1e-12), 0.5 * seconds ** 2, places=8)
+        self.assertAlmostEqual(flight.acceleration_weight(1, 1e8), 1e-8, places=14)
+        for rate in (-1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                flight.project(state, 1, rate)
+        self.assertIsNotNone(flight.release_states(sample(), flight.DAMPED)["reason"])
+        damped = flight.release_states(sample(), flight.DAMPED, damping_rate=2)
+        self.assertEqual(damped["dampingRate"], 2)
+        self.assertTrue(damped["states"])
 
     def test_acceleration_vector_and_known_position_ignore_scalar_acceleration(self):
         play = sample()
@@ -171,6 +190,41 @@ class FlightGeometryTest(unittest.TestCase):
 
 
 class FlightEvaluationTest(unittest.TestCase):
+    def test_damping_selection_cannot_see_held_out_outcomes(self):
+        def truth(game_id, rate):
+            play = sample()
+            play["play"]["gameId"] = game_id
+            release = next(e for e in play["frames"][11]["entities"] if e["id"] == "2")
+            prior = next(e for e in play["frames"][10]["entities"] if e["id"] == "2")
+            release.update(speed=5, direction=90)
+            prior.update(speed=4.8, direction=90)
+            forecast = flight.release_states(play, flight.DAMPED, damping_rate=rate)
+            for frame in play["frames"][12:]:
+                for entity in frame["entities"]:
+                    state = next(s for s in forecast["states"] if s["id"] == entity["id"])
+                    entity["x"], entity["y"] = flight.project(state, (frame["frameId"] - 12) / 10, rate)
+            return play
+
+        development, holdout = truth(GAME_ID, 2), truth("2023090702", 8)
+        catalog = SimpleNamespace(pass_flight_source=lambda: (None, "fixture", [GAME_ID, "2023090702"]))
+        calls = []
+
+        def stream(release, games):
+            calls.append(set(games))
+            return iter(play for play in (development, holdout) if play["play"]["gameId"] in games)
+
+        with patch("ftbdata.pass_window.iter_plays", side_effect=stream):
+            before = flight.evaluate(catalog)
+            holdout = truth("2023090702", 0)
+            after = flight.evaluate(catalog)
+        self.assertEqual(calls, [{GAME_ID}, {"2023090702"}, {GAME_ID}, {"2023090702"}])
+        self.assertEqual(before["tuning"], after["tuning"])
+        self.assertEqual(before["tuning"]["selectedRate"], 2)
+        self.assertEqual(min(before["tuning"]["candidates"], key=lambda c: c["coordinateRmse"])["rate"], 2)
+        self.assertNotEqual(before["comparison"]["baselines"][flight.DAMPED]["overall"], after["comparison"]["baselines"][flight.DAMPED]["overall"])
+        with self.assertRaisesRegex(ValueError, "development games"):
+            flight.tune_damping(None, ["2023090702"])
+
     def test_paired_scores_use_identical_players_and_missing_labels(self):
         play = sample()
         play["play"]["gameId"] = "2023090702"
@@ -180,7 +234,10 @@ class FlightEvaluationTest(unittest.TestCase):
         future = play["frames"][13]
         future["entities"] = [e for e in future["entities"] if e["id"] != "3"]
         catalog = SimpleNamespace(pass_flight_source=lambda: (None, "fixture", [GAME_ID, "2023090702"]))
-        with patch("ftbdata.pass_window.iter_plays", return_value=iter([play])):
+        development = sample()
+        with patch("ftbdata.pass_window.iter_plays", side_effect=lambda release, games: iter(
+            item for item in (development, play) if item["play"]["gameId"] in games
+        )):
             report = flight.evaluate(catalog)
         comparison = report["comparison"]
         self.assertEqual(comparison["counts"]["pairedPlayers"], 1)
@@ -222,12 +279,15 @@ class FlightEvaluationTest(unittest.TestCase):
             self.assertEqual(report["counts"]["scoredPlays"], 2)
             self.assertEqual(report["overall"]["samples"], 20)
             self.assertEqual([row["gameId"] for row in report["byGame"]], [heldout_id])
-            self.assertEqual(report["fittedParameters"], 0)
+            self.assertEqual(report["fittedParameters"], 1)
+            self.assertEqual(report["tuning"]["gameIds"], [GAME_ID])
+            self.assertEqual(report["tuning"]["selectedRate"], 0)
             comparison = report["comparison"]
             self.assertEqual(comparison["counts"]["pairedPlayers"], 4)
             self.assertEqual(comparison["counts"]["velocityOnlyPlayers"], 0)
             for key in ("overall", "byHorizon", "byGame", "byRole"):
                 self.assertEqual(comparison["baselines"][flight.VELOCITY][key], comparison["baselines"][flight.ACCELERATION][key])
+                self.assertEqual(comparison["baselines"][flight.VELOCITY][key], comparison["baselines"][flight.DAMPED][key])
                 self.assertEqual(comparison["baselines"][flight.VELOCITY][key], report[key])
             # Report matches the same per-play scorer used by the visual forecast.
             play = catalog.load_play(heldout_id, "101")
@@ -239,6 +299,17 @@ class FlightEvaluationTest(unittest.TestCase):
             path.write_text(json.dumps(report))
             client = TestClient(create_app(catalog.database_path, flight_report=path))
             self.assertEqual(client.get("/flight-report").status_code, 200)
+            bad_tuning = copy.deepcopy(report)
+            bad_tuning["tuning"]["gameIds"] = [heldout_id]
+            path.write_text(json.dumps(bad_tuning))
+            self.assertEqual(client.get("/flight-report").status_code, 409)
+            bad_tuning = copy.deepcopy(report)
+            bad_tuning["comparison"]["baselines"][flight.DAMPED]["parameters"]["dampingRate"] = 8
+            path.write_text(json.dumps(bad_tuning))
+            self.assertEqual(client.get("/flight-report").status_code, 409)
+            bad_tuning["tuning"]["selectedRate"] = 8
+            path.write_text(json.dumps(bad_tuning))
+            self.assertEqual(client.get("/flight-report").status_code, 409)
             original_version = report["version"]
             report["version"] = "constant-velocity-v1"
             path.write_text(json.dumps(report))

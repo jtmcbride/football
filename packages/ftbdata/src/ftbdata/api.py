@@ -28,7 +28,7 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb"), *, f
 
     @app.get("/flight-report")
     def prediction_report() -> dict[str, Any]:
-        from .flight import VERSION
+        from .flight import report_matches
 
         if flight_report is None:
             raise HTTPException(status_code=503, detail="Held-out measurements unavailable. Run football evaluate-flight and serve with --flight-report.")
@@ -36,7 +36,7 @@ def create_app(database_path: str | Path = Path("data/db/football.duckdb"), *, f
             report = json.loads(flight_report.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             raise HTTPException(status_code=503, detail="Evaluation report cannot be read; regenerate it.") from error
-        if not isinstance(report, dict) or report.get("version") != VERSION or report.get("fingerprint") != catalog.data_health().fingerprint:
+        if not report_matches(report, catalog.data_health().fingerprint):
             raise HTTPException(status_code=409, detail="Evaluation report does not match this catalog or baseline; regenerate it.")
         return report
 

@@ -9,11 +9,16 @@ from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
     from .catalog import TrackingCatalog
+    from .pass_window import Release
 
-VERSION = "pass-flight-comparison-v2"
+VERSION = "pass-flight-comparison-v3"
 VELOCITY = "constant-velocity"
 ACCELERATION = "constant-acceleration"
-BASELINE_VERSIONS = {VELOCITY: "constant-velocity-v1", ACCELERATION: "constant-acceleration-v1"}
+DAMPED = "damped-acceleration"
+BASELINE_VERSIONS = {
+    VELOCITY: "constant-velocity-v1", ACCELERATION: "constant-acceleration-v1", DAMPED: "damped-acceleration-v1",
+}
+DAMPING_RATES = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
 SPLIT = "sha256:pass-flight-v1:<gameId>; first 8 hex digits modulo 5 == 0"
 
 
@@ -21,13 +26,19 @@ def held_out(game_id: str) -> bool:
     return int(hashlib.sha256(f"pass-flight-v1:{game_id}".encode()).hexdigest()[:8], 16) % 5 == 0
 
 
-def release_states(play: dict[str, Any], baseline: str = VELOCITY) -> dict[str, Any]:
+def release_states(play: dict[str, Any], baseline: str = VELOCITY, *, damping_rate: float | None = None) -> dict[str, Any]:
     """Read only observed input frames. Selection flags are supplied by the dataset."""
     window = play["play"].get("passWindow")
     result: dict[str, Any] = {
         "version": BASELINE_VERSIONS[baseline], "baseline": baseline,
         "states": [], "unavailable": [], "reason": None,
     }
+    if baseline == DAMPED:
+        if damping_rate is None:
+            result["reason"] = "Requires a damping rate tuned on development games."
+            return result
+        acceleration_weight(0, damping_rate)  # Validate the supplied parameter before exporting it.
+        result["dampingRate"] = damping_rate
     if not window:
         result["reason"] = "Requires a pass-window release with source prediction participants."
         return result
@@ -61,7 +72,7 @@ def release_states(play: dict[str, Any], baseline: str = VELOCITY) -> dict[str, 
             "x": entity["x"], "y": entity["y"],
             "vx": vx, "vy": vy,
         }
-        if baseline == ACCELERATION:
+        if baseline in (ACCELERATION, DAMPED):
             matches = [e for e in previous["entities"] if e["id"] == player_id] if previous else []
             prior = matches[0] if len(matches) == 1 else None
             if prior is None or not all(_finite(prior.get(k)) for k in ("speed", "direction")) or prior["speed"] < 0:
@@ -78,11 +89,22 @@ def release_states(play: dict[str, Any], baseline: str = VELOCITY) -> dict[str, 
     return result
 
 
-def project(state: dict[str, Any], seconds: float) -> tuple[float, float]:
+def acceleration_weight(seconds: float, damping_rate: float = 0) -> float:
+    """Double integral of exp(-rate*t), with a stable constant-acceleration limit."""
+    if not _finite(damping_rate) or damping_rate < 0:
+        raise ValueError("Damping rate must be finite and nonnegative")
+    z = damping_rate * seconds
+    if abs(z) < 0.001:
+        return seconds ** 2 * (0.5 - z / 6 + z ** 2 / 24 - z ** 3 / 120 + z ** 4 / 720)
+    return (z + math.expm1(-z)) / damping_rate ** 2
+
+
+def project(state: dict[str, Any], seconds: float, damping_rate: float = 0) -> tuple[float, float]:
     """Freeze release velocity and optional causal acceleration; never clip or use future inputs."""
+    weight = acceleration_weight(seconds, damping_rate)
     return (
-        state["x"] + state["vx"] * seconds + 0.5 * state.get("ax", 0) * seconds ** 2,
-        state["y"] + state["vy"] * seconds + 0.5 * state.get("ay", 0) * seconds ** 2,
+        state["x"] + state["vx"] * seconds + state.get("ax", 0) * weight,
+        state["y"] + state["vy"] * seconds + state.get("ay", 0) * weight,
     )
 
 
@@ -105,7 +127,7 @@ def measurements(
             actual = matches[0] if len(matches) == 1 else None
             error = None
             if actual and all(_finite(actual.get(k)) for k in ("x", "y")):
-                x, y = project(state, seconds)
+                x, y = project(state, seconds, forecast.get("dampingRate", 0))
                 error = math.hypot(x - actual["x"], y - actual["y"])
             yield state, frame_id - release_id, error, frame_id == arrival_id
 
@@ -155,6 +177,51 @@ class ScoreGroups:
         }
 
 
+def tune_damping(release: Release, development_games: list[str]) -> dict[str, Any]:
+    """Finish selection using development labels before held-out scoring begins."""
+    from .pass_window import iter_plays
+
+    game_ids = set(development_games)
+    if not game_ids or any(held_out(game) for game in game_ids):
+        raise ValueError("Damping must be tuned exclusively on development games")
+    candidates = {rate: Scores() for rate in DAMPING_RATES}
+    counts: Counter[str] = Counter()
+    skipped: Counter[str] = Counter()
+    for play in iter_plays(release, game_ids):
+        if play["play"]["gameId"] not in game_ids:
+            raise ValueError("Non-development play reached damping tuning")
+        counts["developmentPlays"] += 1
+        if play["provenance"]["validation"]["status"] == "invalid":
+            skipped["invalid tracking play"] += 1
+            continue
+        forecast = release_states(play, ACCELERATION)
+        counts["unavailablePlayers"] += len(forecast["unavailable"])
+        if forecast["reason"] or not forecast["states"]:
+            skipped[forecast["reason"] or "no usable acceleration inputs"] += 1
+            continue
+        if play["play"]["passWindow"]["arrivalFrameId"] is None:
+            skipped["no observed flight window"] += 1
+            continue
+        counts["eligiblePlayers"] += len(forecast["states"])
+        for rate, scores in candidates.items():
+            for _, _, error, final in measurements(play, {**forecast, "dampingRate": rate}):
+                scores.add(error, final)
+        counts["scoredPlays"] += int(any(error is not None for _, _, error, _ in measurements(play, forecast)))
+    if not next(iter(candidates.values())).n:
+        raise ValueError("No development observations available for damping selection")
+    selected = min(candidates, key=lambda rate: (candidates[rate].report()["coordinateRmse"], rate))
+    return {
+        "version": "damping-grid-v1", "baselineVersion": BASELINE_VERSIONS[DAMPED],
+        "method": "Fixed grid search on all development games; no held-out labels used for selection",
+        "objective": "minimum pooled player-frame coordinate RMSE; smallest rate wins exact ties",
+        "parameter": "exponential acceleration decay rate, seconds^-1", "selectedRate": selected,
+        "halfLifeSeconds": math.log(2) / selected if selected else None,
+        "gameIds": sorted(game_ids), "counts": dict(counts), "skippedPlays": dict(skipped),
+        "candidates": [{"rate": rate, **scores.report()} for rate, scores in candidates.items()],
+        "formula": "a(t)=a0*exp(-rate*t); p(t)=p0+v0*t+a0*(rate*t+expm1(-rate*t))/rate^2; rate=0 gives constant acceleration",
+    }
+
+
 def evaluate(catalog: TrackingCatalog) -> dict[str, Any]:
     from .pass_window import iter_plays
 
@@ -162,6 +229,9 @@ def evaluate(catalog: TrackingCatalog) -> dict[str, Any]:
     holdout = sorted(game for game in game_ids if held_out(game))
     if not holdout or len(holdout) == len(game_ids):
         raise ValueError("Evaluation requires both held-out and development games under the fixed split.")
+    development = sorted(set(game_ids) - set(holdout))
+    tuning = tune_damping(release, development)
+    tuning["fingerprint"] = fingerprint
     reference = ScoreGroups()
     paired = {baseline: ScoreGroups() for baseline in BASELINE_VERSIONS}
     comparison_counts: Counter[str] = Counter()
@@ -169,6 +239,8 @@ def evaluate(catalog: TrackingCatalog) -> dict[str, Any]:
     skipped: Counter[str] = Counter()
     counts: Counter[str] = Counter()
     for play in iter_plays(release, set(holdout)):
+        if play["play"]["gameId"] not in holdout:
+            raise ValueError("Non-held-out play reached held-out evaluation")
         counts["heldOutPlays"] += 1
         if play["provenance"]["validation"]["status"] == "invalid":
             skipped["invalid tracking play"] += 1
@@ -197,6 +269,8 @@ def evaluate(catalog: TrackingCatalog) -> dict[str, Any]:
         forecasts = {
             VELOCITY: {**forecast, "states": [state for state in forecast["states"] if state["id"] in common_ids]},
             ACCELERATION: acceleration,
+            DAMPED: {**acceleration, "baseline": DAMPED, "version": BASELINE_VERSIONS[DAMPED],
+                     "dampingRate": tuning["selectedRate"]},
         }
         for baseline, candidate in forecasts.items():
             scored = False
@@ -211,22 +285,29 @@ def evaluate(catalog: TrackingCatalog) -> dict[str, Any]:
         if acceleration_scores[metric] is not None and velocity_scores[metric] is not None else None
         for metric in ("coordinateRmse", "meanDistance", "finalDistance")
     }
-    game_results: Counter[str] = Counter()
-    for game_id, scores in paired[VELOCITY].games.items():
-        cv, ca = scores.report()["coordinateRmse"], paired[ACCELERATION].games[game_id].report()["coordinateRmse"]
-        if cv is not None and ca is not None:
-            game_results["improved" if ca < cv else "worse" if ca > cv else "tied"] += 1
+    damped_scores = paired[DAMPED].total.report()
+    damped_delta = {metric: damped_scores[metric] - velocity_scores[metric]
+                    if damped_scores[metric] is not None and velocity_scores[metric] is not None else None for metric in delta}
+    game_results: dict[str, Counter[str]] = {baseline: Counter() for baseline in (ACCELERATION, DAMPED)}
+    for baseline, results in game_results.items():
+        for game_id, scores in paired[VELOCITY].games.items():
+            cv, other = scores.report()["coordinateRmse"], paired[baseline].games[game_id].report()["coordinateRmse"]
+            if cv is not None and other is not None:
+                results["improved" if other < cv else "worse" if other > cv else "tied"] += 1
     return {
         "version": VERSION, "createdAt": datetime.now(timezone.utc).isoformat(),
         "fingerprint": fingerprint, "splitRule": SPLIT,
-        "heldOutGames": holdout, "developmentGames": sorted(set(game_ids) - set(holdout)),
-        "fittedParameters": 0, "counts": dict(counts), "skippedPlays": dict(skipped),
+        "heldOutGames": holdout, "developmentGames": development, "tuning": tuning,
+        "fittedParameters": 1, "counts": dict(counts), "skippedPlays": dict(skipped),
         "baseline": VELOCITY, **reference.report(),
         "comparison": {
             "counts": dict(comparison_counts), "unavailableReasons": dict(unavailable_reasons),
-            "baselines": {baseline: {"version": BASELINE_VERSIONS[baseline], **scores.report()}
+            "baselines": {baseline: {"version": BASELINE_VERSIONS[baseline],
+                                     "parameters": {"dampingRate": tuning["selectedRate"]} if baseline == DAMPED else {},
+                                     **scores.report()}
                           for baseline, scores in paired.items()},
-            "delta": delta, "gameResults": dict(game_results),
+            "delta": delta, "gameResults": dict(game_results[ACCELERATION]),
+            "dampedDelta": damped_delta, "dampedGameResults": dict(game_results[DAMPED]),
             "deltaDefinition": "Constant acceleration minus constant velocity on identical players, frames and labels; negative is better",
         },
         "definitions": {
@@ -235,10 +316,12 @@ def evaluate(catalog: TrackingCatalog) -> dict[str, Any]:
             "finalDistance": "Mean Euclidean error at the last observed play output frame, yards; missing endpoints excluded",
         },
         "limitations": [
-            "No fitted parameters. Development games are reserved for future models; none are used to fit these baselines.",
+            "One damping rate selected on development games only; the two undamped baselines have no fitted parameters.",
+            "Development grid scores are tuning scores, not validation scores. The rate is frozen before held-out scoring begins.",
+            "Damped acceleration decays exponentially; velocity itself is not damped. Predictions remain unbounded and can leave the field.",
             "Acceleration is the backward difference of the last two input speed/direction velocity vectors, 0.1 s apart; scalar a is unused.",
             "Constant acceleration remains fixed in field coordinates, with no damping, speed cap or stopping constraint; it can reverse direction or overshoot.",
-            "Comparison uses only participants with both baselines available; the top-level velocity reference retains its original eligibility.",
+            "Comparison uses only participants with all baselines available; the top-level velocity reference retains its original eligibility.",
             "Release and arrival are derived input/output boundaries at 10 Hz, not annotated events.",
             "Output length defines only the evaluation window; landing, output positions and duration are not forecast inputs.",
             "Dataset participant selection uses future throw information. Scores describe source-selected players, not all players.",
@@ -250,6 +333,35 @@ def evaluate(catalog: TrackingCatalog) -> dict[str, Any]:
 
 def _finite(value: Any) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def report_matches(report: Any, fingerprint: str | None) -> bool:
+    """Reject stale or mismatched tuning before the UI uses its fitted parameter."""
+    try:
+        tuning = report["tuning"]
+        rate = tuning["selectedRate"]
+        development, holdout = report["developmentGames"], report["heldOutGames"]
+        baselines = report["comparison"]["baselines"]
+        candidates = tuning["candidates"]
+        if tuple(item["rate"] for item in candidates) != DAMPING_RATES or not all(
+            _finite(item["coordinateRmse"]) and item["coordinateRmse"] >= 0 for item in candidates
+        ):
+            return False
+        winner = min(candidates, key=lambda item: (item["coordinateRmse"], item["rate"]))
+        return (
+            bool(fingerprint) and report["version"] == VERSION and report["fingerprint"] == fingerprint
+            and tuning["fingerprint"] == fingerprint and tuning["version"] == "damping-grid-v1"
+            and tuning["baselineVersion"] == BASELINE_VERSIONS[DAMPED]
+            and _finite(rate) and rate in DAMPING_RATES
+            and winner["rate"] == rate
+            and tuning["gameIds"] == development and development == sorted(set(development)) and bool(development)
+            and holdout == sorted(set(holdout)) and bool(holdout)
+            and not any(held_out(game) for game in development) and all(held_out(game) for game in holdout)
+            and all(baselines[key]["version"] == version for key, version in BASELINE_VERSIONS.items())
+            and baselines[DAMPED]["parameters"] == {"dampingRate": rate}
+        )
+    except (KeyError, TypeError, AttributeError):
+        return False
 
 
 def _velocity(entity: dict[str, Any]) -> tuple[float, float]:

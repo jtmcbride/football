@@ -7,8 +7,8 @@ import { TeamShapePanel } from "./components/TeamShapePanel";
 import { RouteAtlas } from "./components/RouteAtlas";
 import { Timeline } from "./components/Timeline";
 import { FlightLab } from "./components/FlightLab";
-import { BASELINE_LABELS, flightGhosts, type FlightBaseline } from "./lib/flight";
-import { fetchTrackingPlay } from "./lib/catalog";
+import { BASELINE_LABELS, dampingRateFor, flightGhosts, type FlightBaseline, type FlightReport } from "./lib/flight";
+import { fetchJson, fetchTrackingPlay } from "./lib/catalog";
 import { clampFrame, isLinkedTo, parsePlayLink, withPlayLink, withoutPlayLink } from "./lib/playLink";
 import { qualityBadge } from "./lib/provenance";
 import { teamShapeSeries } from "./lib/teamShape";
@@ -69,10 +69,22 @@ export default function App() {
   const [showLanding, setShowLanding] = useState(true);
   const [showGhosts, setShowGhosts] = useState(true);
   const [flightBaseline, setFlightBaseline] = useState<FlightBaseline>("constant-velocity");
+  const [flightReport, setFlightReport] = useState<FlightReport | null>(null);
+  const [flightReportError, setFlightReportError] = useState<string | null>(null);
   const [routeSelection, setRouteSelection] = useState<{ owner: TrackingPlay; routes: RoutePath[] } | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const locationSearch = useRef(window.location.search);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchJson<FlightReport>("/api/flight-report", controller.signal).then((report) => {
+      if (!controller.signal.aborted) { setFlightReport(report); setFlightReportError(null); }
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setFlightReportError(error instanceof Error ? error.message : "Evaluation unavailable.");
+    });
+    return () => controller.abort();
+  }, []);
 
   // Restore the play named by the URL on first load and on browser back/forward.
   useEffect(() => {
@@ -172,7 +184,8 @@ export default function App() {
   }, []);
 
   const shapeSeries = useMemo(() => play ? teamShapeSeries(play) : [], [play]);
-  const ghosts = useMemo(() => play ? flightGhosts(play, frameIndex, flightBaseline) : [], [play, frameIndex, flightBaseline]);
+  const dampingRate = play ? dampingRateFor(play, flightReport) : undefined;
+  const ghosts = useMemo(() => play ? flightGhosts(play, frameIndex, flightBaseline, dampingRate) : [], [play, frameIndex, flightBaseline, dampingRate]);
   const shapeSnapshot = shapeSeries[frameIndex] ?? null;
   const currentRoute = useMemo(() => play ? observedRoute(play) : null, [play]);
   const routeOverlays = routeSelection?.owner === play ? routeSelection.routes : NO_ROUTES;
@@ -293,6 +306,7 @@ export default function App() {
             />
             <FlightLab play={play} frameIndex={frameIndex} ghosts={ghosts}
               baseline={flightBaseline} onBaselineChange={setFlightBaseline}
+              report={flightReport} error={flightReportError} dampingRate={dampingRate}
               onFrameChange={changeFrame} onSelectEntity={setSelectedEntityId} />
             <PlayerAnalysis
               play={play}
